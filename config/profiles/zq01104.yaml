@@ -1,0 +1,48 @@
+# U'King / ZonQoonz ZQ01104 — 36-LED mobile PAR (12R + 12G + 12B + 1 white bead)
+# 7-channel DMX mode.
+#
+# Channel layout cross-checked against the Open Fixture Library definition for
+# this fixture family: https://open-fixture-library.org/uking/par-light-b262
+#
+# VERIFY WITH tools/dmx_sweep.py BEFORE THE PARTY. These units ship under many
+# labels and the firmware varies; the sweep tool confirms the real layout in
+# about a minute per fixture.
+
+model: ZQ01104
+label: "U'King 36-LED RGB PAR"
+footprint: 7
+gamma: 2.2
+
+notes: >
+  Offset 5 is the mode channel and it is the single most important value in this
+  file. Anything above 10 puts the fixture into one of its internal programs
+  (hue select, hue shift, pulse, transition, sound-active) and it will then
+  ignore every colour we send while looking, from across the room, like a wiring
+  fault. We pin it to 0 on every frame. Offset 6 only means anything in those
+  internal modes, so it stays at 0 too.
+  This model has no addressable white channel — the single white bead is wired
+  into the RGBW cluster and is not separately controllable — so colour here is
+  RGB only.
+
+channels:
+  - offset: 0
+    role: dimmer
+  - offset: 1
+    role: red
+  - offset: 2
+    role: green
+  - offset: 3
+    role: blue
+  - offset: 4
+    role: strobe
+    open_value: 0      # 0-7 reads as shutter open
+    min_rate: 8        # 8-255 is slow -> fast
+    max_rate: 255
+  - offset: 5
+    role: fixed
+    value: 0
+    note: "mode - MUST stay 0-10 or the fixture runs its own program"
+  - offset: 6
+    role: fixed
+    value: 0
+    note: "hue/speed - only used by the internal modes we are avoiding"

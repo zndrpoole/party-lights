@@ -1,0 +1,15 @@
+# Core
+pyyaml>=6.0
+numpy>=1.26
+
+# DMX output
+pyserial>=3.5          # serial driver: Apple's FTDI VCP, works everywhere
+pyftdi>=0.55           # ftdi driver: direct libusb, tighter timing (Intel only)
+
+# Audio analysis
+sounddevice>=0.4.6
+scipy>=1.11
+
+# Web UI and jukebox integration
+flask>=3.0
+requests>=2.31

@@ -1,0 +1,57 @@
+# Runtime settings. Everything here is safe to change without touching code.
+
+dmx:
+  # "serial"  — Apple's FTDI virtual serial port. Works everywhere, no setup.
+  # "ftdi"    — direct libusb. Tighter frame timing, but needs AppleUSBFTDI
+  #             unloaded (Intel only; SIP blocks it on Apple Silicon).
+  # "null"    — no hardware; simulates output so the UI and looks still run.
+  driver: serial
+
+  # Serial driver only. Find yours with: ls /dev/cu.usbserial-*
+  port: /dev/cu.usbserial-B002NJL7
+
+  # FTDI driver only. Leave blank to grab the first FT232R found.
+  serial_number: B002NJL7
+
+  # Frames per second. DMX512 tops out near 44 Hz with a full 512-slot frame,
+  # but we send a short frame (see rig.yaml), so 40 Hz has comfortable headroom.
+  refresh_hz: 40
+
+  # "ioctl" is right for the genuine ENTTEC and most clones. Switch to "baud"
+  # only if a fixture ignores frames entirely — some clones want the old
+  # drop-to-96000-baud trick to see a BREAK.
+  break_mode: ioctl
+
+audio:
+  # Substring match against the input device name. BlackHole is the loopback tap
+  # that lets us analyse what the speakers are playing.
+  # List candidates with: python -m partylights.cli audio-devices
+  device: BlackHole
+  sample_rate: 48000
+  block_size: 512
+  channels: 2
+
+  # Milliseconds to delay the lights so they line up with what the room hears.
+  # Positive values delay the lights. Needed because the capture tap is upstream
+  # of any speaker, AirPlay or wireless-DMX latency. Tune by ear against a track
+  # with a hard, obvious kick.
+  output_delay_ms: 0
+
+jukebox:
+  # The existing party jukebox. Used for track-change cues and context only;
+  # if it is unreachable the lights keep reacting to audio regardless.
+  url: http://localhost:5000
+  poll_seconds: 2.0
+  enabled: true
+
+web:
+  host: 0.0.0.0        # 0.0.0.0 so you can reach it from your phone
+  port: 5001
+
+engine:
+  tick_hz: 100
+  # Safety rail on strobe effects. Rapid full-field flashing between roughly
+  # 5 and 30 Hz is the photosensitive-seizure risk band; this caps how long any
+  # strobe look can run before it is forced to rest.
+  max_strobe_seconds: 4.0
+  start_look: ambient

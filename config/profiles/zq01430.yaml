@@ -1,0 +1,51 @@
+# U'King / ZonQoonz ZQ01430 — 6 x 18W RGBWA+UV six-in-one battery PAR
+# 10-channel DMX mode. (The fixture also offers a 6-channel mode that drops the
+# dimmer and strobe and exposes the six emitters directly; 10CH is strictly more
+# capable, so set the fixture's menu to 10CH.)
+#
+# VERIFY WITH tools/dmx_sweep.py. In particular confirm which of offsets 8/9 is
+# the mode channel, and that amber and UV respond where expected.
+
+model: ZQ01430
+label: "U'King 6x18W RGBWA+UV PAR"
+footprint: 10
+gamma: 2.2
+
+notes: >
+  The only fixture in the rig with white, amber and UV emitters, which makes it
+  the natural accent light: it can produce warm tones and blacklight that the
+  twelve RGB PARs physically cannot. Colour conversion extracts white and amber
+  automatically (see fixtures/color.py); UV is never derived from RGB because it
+  is outside the visible gamut, so a look has to ask for it explicitly.
+
+  Run this fixture on AC power. Its 9600 mAh battery against a 108 W draw gives
+  well under an hour at full output, and it will fade mid-party on battery.
+
+channels:
+  - offset: 0
+    role: dimmer
+  - offset: 1
+    role: red
+  - offset: 2
+    role: green
+  - offset: 3
+    role: blue
+  - offset: 4
+    role: white
+  - offset: 5
+    role: amber
+  - offset: 6
+    role: uv
+  - offset: 7
+    role: strobe
+    open_value: 0
+    min_rate: 5
+    max_rate: 255
+  - offset: 8
+    role: fixed
+    value: 0
+    note: "mode/macro - pin to 0 to stay under manual DMX control"
+  - offset: 9
+    role: fixed
+    value: 0
+    note: "effect speed - unused while mode is 0"

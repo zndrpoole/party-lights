@@ -1,0 +1,29 @@
+# THE PATCH — which lights exist and where they answer on the DMX line.
+#
+# Adding more lights is an edit here and nothing else. For more of a model we
+# already have, bump `count` and check the addresses below it still fit. For a
+# new model, drop a profile into config/profiles/ and add an entry.
+#
+# An entry with `count` is a bank: ids get a numeric suffix (par1..par12) and
+# addresses step by the profile's footprint from `address`.
+#
+# Current usage: 12 x 7ch = 84, plus 10ch = 94 channels of 512. Lots of room.
+#
+# `position` is assigned automatically in patch order and is what chases use as
+# physical order — so list the PARs in the order they are actually arranged
+# around the room, left to right. Getting this wrong makes a chase look like
+# random flashing instead of movement.
+
+fixtures:
+  - id: par
+    profile: zq01104
+    count: 12
+    address: 1          # expands to 1, 8, 15, 22, 29, 36, 43, 50, 57, 64, 71, 78
+    groups: [pars, rgb]
+    label: "PAR"
+
+  - id: accent
+    profile: zq01430
+    address: 85
+    groups: [accent, uv]
+    label: "RGBWA+UV Accent"
