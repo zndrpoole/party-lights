@@ -5,7 +5,7 @@ buttons, a keyboard shortcut, a Stream Deck button running curl, a MIDI pad
 later -- fires the same cue by name through the same endpoint. Adding the Stream
 Deck therefore needs no code: a button runs
 
-    curl -X POST http://localhost:5001/api/cue/blackout
+    curl -X POST http://localhost:5055/api/cue/blackout
 
 Adding MIDI later means mapping notes to these same names.
 """
