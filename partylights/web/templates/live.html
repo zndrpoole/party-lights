@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Live Cues</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  /* Six big targets, matching the Stream Deck Mini's six buttons, so muscle
+     memory transfers between the phone and the hardware. */
+  .cues {
+    display: grid; gap: 12px; margin-top: 16px;
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .cue {
+    aspect-ratio: 1 / 1; border-radius: 14px; border: 1px solid var(--line);
+    background: var(--panel-2); display: grid; place-content: center;
+    text-align: center; gap: 6px; cursor: pointer; user-select: none;
+    padding: 10px; min-height: 0;
+  }
+  .cue:active { transform: scale(.97); }
+  .cue.on { background: var(--accent); border-color: var(--accent); color: #140a02; }
+  .cue.danger.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .cue .k {
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    opacity: .6; border: 1px solid currentColor; border-radius: 4px;
+    padding: 0 5px; justify-self: center;
+  }
+  .cue .t { font-size: 15px; font-weight: 600; }
+  .big { font-size: 34px; font-variant-numeric: tabular-nums; }
+  @media (max-width: 520px) { .cues { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Live</h1>
+  <span class="pill"><i class="dot" id="d-dmx"></i> DMX <b id="s-dmx">—</b></span>
+  <span class="pill">Look <b id="s-look">—</b></span>
+  <span class="pill">Mode <b id="s-mode">—</b></span>
+  <span class="spacer"></span>
+  <a href="/">&larr; Full control</a>
+</header>
+
+<div class="panel" style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+  <div class="beat" id="beat">beat</div>
+  <div>
+    <div class="big mono" id="s-bpm">—</div>
+    <div class="mini" style="font-size:11px;color:var(--dim)">BPM</div>
+  </div>
+  <div style="flex:1 1 200px">
+    <div class="meter"><div class="lbl"><span>energy</span><span id="s-energy">0.00</span></div>
+      <div class="bar"><i id="m-energy"></i></div></div>
+    <div class="meter"><div class="lbl"><span>master</span><span id="s-master">100%</span></div>
+      <div class="bar"><i id="m-master"></i></div></div>
+  </div>
+  <div class="mono" style="color:var(--dim);font-size:12px" id="s-track"></div>
+</div>
+
+<div class="cues" id="cues"></div>
+
+<div class="note">
+  Keyboard: the key shown on each button. <b>Space</b> is blackout.
+  Arrow <b>&uarr;/&darr;</b> adjusts master. These are the same endpoints a
+  Stream Deck button hits, so anything here can be bound to hardware.
+</div>
+
+</div>
+<script src="/static/live.js"></script>
+</body>
+</html>

@@ -140,6 +140,176 @@ A new model — drop a profile into `config/profiles/` describing its channels b
 past-the-end-of-the-universe mistakes are hard errors at load, naming both
 culprits.
 
+## Running it
+
+```bash
+./.venv/bin/python -m partylights.cli run
+```
+
+Then open **http://localhost:5055/** — bound to `0.0.0.0`, so use the Mac's LAN
+address from your phone and run the rig from anywhere in the house.
+
+| | |
+|---|---|
+| `/` | Full control: mode, master, looks, palettes, live meters, per-fixture override |
+| `/live` | Six big cue buttons with keyboard shortcuts, mirroring the Stream Deck |
+| `/api/cue/<name>` | The cue API — what the Stream Deck hits |
+
+Useful flags while setting up: `--driver null` (no hardware), `--no-audio`,
+`--no-jukebox`. All three let you work on part of the system in isolation.
+
+### Audio capture
+
+The Mac has no system loopback, so the signal has to be split:
+
+```
+Spotify ─► Multi-Output Device ─┬─► your real speakers   (the room hears this)
+                                └─► BlackHole            (we analyse this)
+```
+
+```bash
+brew install --cask blackhole-2ch       # needs your password
+```
+
+Then in **Audio MIDI Setup**: create a Multi-Output Device, tick your real
+speakers *and* BlackHole, set **your real speakers as the Master device**, and
+tick **Drift Correction on BlackHole only**.
+
+That orientation is the whole trick. Every device clocks samples off its own
+crystal, so a nominal 48000 Hz is really 48000.4 on one and 47999.6 on the
+other. Feed one stream to two devices and one drains its buffer faster than the
+other fills it, until you hear clicks, dropouts, or the outputs sliding out of
+sync. Drift Correction resamples the secondary device to match the Master's
+clock. Get the Master backwards and you get the clicking — which is why people
+say Multi-Output "doesn't work". BlackHole is virtual and has no crystal of its
+own, so with the real speakers as Master there is nothing left to drift.
+
+Known cost: with a Multi-Output Device active the **F11/F12 volume keys stop
+working**. Set level inside Spotify instead.
+
+`python -m partylights.cli audio-devices` lists what's available and tells you
+what to put in `audio.device`.
+
+**Not Loopback's free trial.** Rogue Amoeba's Loopback has no free tier — the
+trial runs fully featured for 20 minutes per launch and then *overlays noise on
+the audio passing through it*, which at a party is your music. BlackHole is
+genuinely free and does the one thing needed here perfectly.
+
+## The look engine
+
+Looks are pure functions from the state of the music to what each fixture should
+do. They own no DMX, no timing and no fixtures — they receive a `MusicState` and
+return an `Emission` per fixture id, and the engine handles blending, overrides,
+the master dimmer and output. A look therefore cannot break the output path,
+which is what makes one safe to edit mid-party.
+
+| Look | |
+|---|---|
+| `ambient` | Slow breathing wash. The graceful idle, and the fallback whenever anything is unavailable |
+| `wash` | Colour gradient along the run, brightness from the low end |
+| `pulse` | Alternating halves hit on every kick |
+| `chase` | Bright head sweeping the room, locked to beat phase |
+| `sparkle` | Scattered flashes on hi-hats over a dim bed |
+| `uv` | Blacklight from the accent fixture over a dark bed |
+| `strobe` | **Manual only**, time-limited — see below |
+| `blinder` | **Manual only** — everything full white |
+
+Auto mode picks from sustained energy, tempo lock and structural events (a drop
+goes kinetic, a breakdown goes to UV), holding a look for 22 seconds so it reads
+as a lighting operator rather than an energy meter driving a selector switch.
+Leaving the idle look bypasses that dwell, so starting the rig mid-song reacts
+immediately.
+
+**Strobe safety.** Rapid full-field flashing between roughly 5 and 30 Hz is the
+photosensitive-seizure risk band. `strobe` and `blinder` are excluded from
+automatic selection — nothing should put that on a room unprompted — and the
+engine caps how long a strobe can run (`engine.max_strobe_seconds`) so a stuck
+button or a forgotten cue cannot leave the room flashing. That cap is a safety
+rail, not a style choice.
+
+### Adding a look
+
+One file in `partylights/engine/looks/`, one entry in that package's `LOOKS`
+tuple. Subclass `Look`, implement `render(music, palette, dt)`, return a dict of
+fixture id to `Emission`. Omitted fixtures go black, so a look only describes
+what it drives.
+
+## Stream Deck and keyboard
+
+Every manual action is a named cue, and every trigger routes through the same
+endpoint — web buttons, keyboard, Stream Deck, MIDI later. The Stream Deck needs
+**no plugin**: its built-in "System → Open" action can run a script.
+
+```bash
+python -m partylights.cli streamdeck ~/party-cues
+```
+
+That writes one script per suggested button; point each Stream Deck button at
+one. Reassigning is a one-line edit because every cue is just a URL.
+
+```
+blackout  freeze  mode  next-look  palette  master-up  master-down
+clear-manual  resume-auto  look/<name>  palette/<name>
+```
+
+`python -m partylights.cli cues` lists them all. `resume-auto` is the "undo all
+my fiddling" cue: releases every override, unfreezes, back to music-driven.
+
+## Tuning the analysis offline
+
+```bash
+python tools/make_test_audio.py /tmp/audio     # known tempo, known hit counts
+python tools/analyze_file.py track.mp3 --timeline
+python tools/analyze_file.py /tmp/audio/click_128.wav --expect-bpm 128
+```
+
+`analyze_file.py` drives the *same analyser object* the live engine drives, fed
+the same way. That equivalence is the point: it means tuning against a file
+genuinely tunes the live rig, with no hardware, no speakers and no waiting for
+the right moment in a song.
+
+Measured against synthetic ground truth: all five tempos from 90 to 174 BPM
+within 2% and locked 100% of each track; onsets 31/32 kicks, 33/32 snares,
+64/64 hats; a drop detected 0.73 s after the real one.
+
+Spotify's `audio-features` / `audio-analysis` endpoints were deprecated for new
+apps in November 2024, so a pre-baked beat grid is not available. Real-time DSP
+is the only honest option.
+
+## Party-night runbook
+
+**Beforehand**
+
+1. `python tools/dmx_sweep.py` — confirm the link and the profiles.
+2. `python tools/dmx_sweep.py address` — set every fixture's address.
+3. `python tools/dmx_sweep.py identify` — confirm `par1..par12` are in physical order.
+4. Install BlackHole, build the Multi-Output Device, check `audio-devices`.
+5. Plug the ZQ01430 into AC, not battery.
+6. Run for a full album at volume. Thermal throttling, USB dropouts and clock
+   drift only show up after many minutes — not in a two-minute test.
+
+**Startup order**
+
+1. Start the jukebox (port 5000), authorise Spotify, pin the playback device.
+2. Set macOS output to the Multi-Output Device.
+3. Start party-lights. Check the three status dots at the top of the page.
+4. Open `/live` on your phone and leave it open.
+
+**When something goes wrong**
+
+| Symptom | Cause |
+|---|---|
+| One fixture does its own colour show | Its mode channel is not 0 — wrong DMX mode on the fixture's own menu |
+| All fixtures do the same thing | They are all still on address 1 |
+| Nothing responds | Cable direction, or the fixture is not in DMX mode. `dmx_sweep.py flood` tests the link alone |
+| Lights lag the music | `audio.output_delay_ms`. Wireless DMX adds 20–80 ms; AirPlay adds ~2 s |
+| Lights stutter | Check `dropouts` and DMX `late` in the UI. Usually the i9 throttling |
+| Lights frozen on one frame | `freeze` is on, or the engine died — the writer keeps sending the last good frame by design |
+| Fixtures stuck on after quitting | Should not happen: shutdown sends an all-zero frame. If the process was `kill -9`, re-run and blackout |
+
+**Panic**: Space on `/live`, or the blackout button, or
+`curl -X POST localhost:5055/api/cue/blackout`.
+
 ## Layout
 
 ```
@@ -148,10 +318,17 @@ config/
   rig.yaml           THE PATCH: what exists and where it answers
   profiles/*.yaml    per-model channel maps
 partylights/
-  dmx/               drivers + the universe and its 40 Hz writer thread
-  fixtures/          colour, profiles, patch
+  dmx/               drivers, the universe, and its 40 Hz writer thread
+  fixtures/          colour conversion, profiles, patch
+  audio/             capture, features, tempo, structure, analyser facade
+  engine/            engine, state, cues, palettes, looks/
+  jukebox/           polls the jukebox for track context
+  web/               Flask UI and JSON API
 tools/
-  dmx_sweep.py       Phase 0 hardware and profile verification
+  dmx_sweep.py       hardware and profile verification
+  analyze_file.py    run the live analysis chain offline against a file
+  make_test_audio.py synthetic tracks with known tempo and hit counts
+  audio_check.py     confirm the loopback tap is live
 ```
 
 ## Tests
@@ -160,5 +337,7 @@ tools/
 ./.venv/bin/python -m pytest
 ```
 
-Covers colour conversion, channel-map arithmetic, address collision detection,
-and a regression guard on the PAR mode channel staying at zero.
+105 tests. Most of the audio and engine ones are regression guards on bugs that
+produced plausible-looking output while being wrong — the dangerous failure mode
+here, because nothing crashes and the lights just do not quite follow the music.
+Each of those tests names the bug it guards and what the symptom was.

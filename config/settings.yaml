@@ -46,7 +46,7 @@ jukebox:
 
 web:
   host: 0.0.0.0        # 0.0.0.0 so you can reach it from your phone
-  port: 5001
+  port: 5055
 
 engine:
   tick_hz: 100

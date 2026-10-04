@@ -1,0 +1,386 @@
+"""The engine: audio in, DMX out, forty times a second.
+
+The tick is deliberately boring and always the same shape:
+
+    pull audio -> analyse -> choose a look -> render it -> blend ->
+    manual override -> master dimmer -> write the universe
+
+Everything that could fail is contained. A look that raises is dropped for that
+frame and the previous frame's values stand; a dead analyser degrades to the
+ambient look; a missing jukebox is simply no metadata. The one thing that must
+never happen at a party is the room going dark because of a software error, so
+no exception on this path is allowed to propagate to the output thread.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+
+import numpy as np
+
+from ..audio.analyser import Analyser, MusicState
+from ..audio.capture import AudioCapture
+from ..audio.features import Envelope, FeatureFrame
+from ..audio.structure import BREAKDOWN, DROP, SECTION_CHANGE
+from ..dmx.universe import Universe
+from ..fixtures.color import BLACK, Emission, clamp
+from ..fixtures.patch import Patch
+from . import palette as palettes
+from .looks import BY_NAME, auto_selectable, build_all
+from .state import EngineState
+
+log = logging.getLogger(__name__)
+
+#: Seconds to crossfade between looks. Long enough to read as a transition,
+#: short enough not to feel like a dissolve.
+FADE_S = 0.9
+
+#: Minimum seconds a look runs in auto mode before another may be chosen,
+#: unless a structural event forces it. Without this the rig twitches between
+#: looks every time the energy wobbles across a threshold.
+#:
+#: Measured on the *audio* clock (MusicState.t), not wall clock. The engine
+#: otherwise mixes two clocks: look dwell on wall time while everything it
+#: reacts to is timestamped in audio time. Live they advance together, but they
+#: diverge whenever audio does not arrive in real time -- which made offline
+#: testing silently misleading, and would freeze the dwell if capture stalled.
+AUTO_DWELL_S = 22.0
+
+#: Thresholds on *sustained* energy, not instantaneous energy.
+#:
+#: This distinction caused a real bug. FeatureFrame.energy is peak-normalised
+#: instantaneous RMS, which on a track with clear drums averages only about
+#: 0.13: it is near zero between hits, and roughly 38% of frames read as
+#: outright silent. Comparing that directly against a threshold made auto mode
+#: flap into the idle look on every gap between kicks, so a 46-second 128 BPM
+#: track never left `ambient`. Holding the peak with a slow release instead
+#: gives a signal that actually means "the music is going", which is what a
+#: look-selection decision wants. Looks still use instantaneous energy for
+#: brightness, where the fast response is the point.
+IDLE_ENERGY = 0.08
+BUSY_ENERGY = 0.60
+MID_ENERGY = 0.30
+
+#: Attack/release for the sustained-energy follower, in seconds. The long
+#: release is what spans the gaps between hits.
+ENERGY_ATTACK_S = 0.05
+ENERGY_RELEASE_S = 2.5
+
+
+class Engine:
+    def __init__(
+        self,
+        patch: Patch,
+        universe: Universe,
+        state: EngineState,
+        *,
+        capture: AudioCapture | None = None,
+        analyser: Analyser | None = None,
+        tick_hz: float = 100.0,
+        output_delay_ms: float = 0.0,
+    ):
+        self.patch = patch
+        self.universe = universe
+        self.state = state
+        self.capture = capture
+        self.analyser = analyser or Analyser(
+            sample_rate=capture.sample_rate if capture else 48000
+        )
+        self.tick_hz = tick_hz
+        self.output_delay_samples = int(
+            (output_delay_ms / 1000.0) * (capture.sample_rate if capture else 48000)
+        )
+
+        self.looks = build_all(patch)
+        self._active = state.look if state.look in self.looks else "ambient"
+        self._previous: str | None = None
+        self._fade = 1.0
+        self.looks[self._active].reset()
+
+        #: Audio-clock timestamp of the last look change. See AUTO_DWELL_S.
+        self._auto_since = 0.0
+        self._last_read = 0
+        self._music: MusicState | None = None
+        self._energy_env = Envelope(ENERGY_ATTACK_S, ENERGY_RELEASE_S, rate_hz=tick_hz)
+
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._ticks = 0
+        self._errors = 0
+        self._last_error = ""
+
+    # -- public ----------------------------------------------------------
+
+    @property
+    def active_look(self) -> str:
+        return self._active
+
+    @property
+    def music(self) -> MusicState | None:
+        return self._music
+
+    @property
+    def sustained_energy(self) -> float:
+        """Peak-held energy, 0..1 — "is the music going right now".
+
+        See IDLE_ENERGY for why look selection must not use the instantaneous
+        value instead.
+        """
+        return self._energy_env.value
+
+    def on_track_change(self, title: str = "", artist: str = "") -> None:
+        """A new song started.
+
+        A track boundary is the one cue point we get for free, and it is the
+        best possible moment for a palette change: the room already expects
+        something to happen.
+        """
+        self.analyser.on_track_change()
+        self.state.track_title = title
+        self.state.track_artist = artist
+        names = palettes.names()
+        if names:
+            try:
+                idx = names.index(self.state.palette)
+            except ValueError:
+                idx = -1
+            self.state.set_palette(names[(idx + 1) % len(names)])
+        log.info("Track change: %s — %s (palette now %s)",
+                 artist or "?", title or "?", self.state.palette)
+
+    def select(self, name: str) -> bool:
+        """Switch look, starting a crossfade. False if the name is unknown."""
+        if name not in self.looks or name == self._active:
+            return name in self.looks
+        self._previous = self._active
+        self._active = name
+        self._fade = 0.0
+        self.looks[name].reset()
+        self._auto_since = self._music.t if self._music else 0.0
+        log.info("Look -> %s", name)
+        return True
+
+    def next_look(self) -> str:
+        """Advance to the next look in registry order. Used by the cue API."""
+        order = [n for n in self.looks if not getattr(self.looks[n], "manual_only", False)]
+        if not order:
+            return self._active
+        try:
+            idx = order.index(self._active)
+        except ValueError:
+            idx = -1
+        self.select(order[(idx + 1) % len(order)])
+        return self._active
+
+    def stats(self) -> dict:
+        return {
+            "ticks": self._ticks,
+            "errors": self._errors,
+            "last_error": self._last_error,
+            "look": self._active,
+            "sustained_energy": round(self._energy_env.value, 3),
+            "fading_from": self._previous if self._fade < 1.0 else None,
+            "fade": round(self._fade, 2),
+        }
+
+    # -- the tick --------------------------------------------------------
+
+    def _pull_audio(self) -> None:
+        """Feed the analyser everything captured since the last tick.
+
+        Reading exactly what is new avoids both re-analysing samples (which
+        would corrupt the onset and tempo state) and skipping any.
+        """
+        if self.capture is None:
+            return
+        total = self.capture.ring.total_written
+        available = total - self._last_read
+        if available <= 0:
+            return
+        # Cap the catch-up so a long stall cannot cause one enormous FFT batch
+        # that stalls us further.
+        available = min(available, self.capture.sample_rate)
+        block = self.capture.ring.latest(available, delay=self.output_delay_samples)
+        self._last_read = total
+        states = self.analyser.feed(block)
+        if states:
+            self._music = states[-1]
+
+    def _choose_auto(self, music: MusicState) -> None:
+        """Pick a look from what the music is doing.
+
+        Reacts immediately to structural events and otherwise holds a look for
+        AUTO_DWELL_S. The dwell is what makes this feel like a lighting operator
+        rather than an energy meter driving a selector switch.
+        """
+        now = music.t
+        allowed = [n for n in auto_selectable() if n in self.looks]
+        if not allowed:
+            return
+
+        def pick(name: str) -> None:
+            if name in self.looks:
+                self.select(name)
+
+        sustained = self._energy_env.value
+        if sustained < IDLE_ENERGY:
+            if self._active != "ambient":
+                pick("ambient")
+            return
+
+        events = set(music.events)
+        if DROP in events:
+            # Biggest moment in a track: go to the most kinetic look we can
+            # actually drive. Chase needs a tempo lock to look right.
+            pick("chase" if music.tempo_locked else "pulse")
+            return
+        if BREAKDOWN in events:
+            pick("uv")
+            return
+
+        # Leaving the idle look is always allowed. The dwell exists to stop
+        # the rig twitching between *active* looks; applying it to `ambient`
+        # means starting the software mid-song leaves the room idle for the
+        # whole dwell while people are already dancing. Observed directly: 8
+        # bars of music at sustained energy 0.40 and the engine stayed on
+        # ambient, because a track that is already playing when we start
+        # produces no drop event to break the dwell.
+        leaving_idle = self._active == "ambient" and sustained > MID_ENERGY
+        forced = SECTION_CHANGE in events and now - self._auto_since > AUTO_DWELL_S / 2
+        if not (forced or leaving_idle) and now - self._auto_since < AUTO_DWELL_S:
+            return
+
+        # Otherwise choose by energy, rotating among the candidates at that
+        # energy so a long track does not sit on one look forever.
+        if sustained > BUSY_ENERGY:
+            candidates = ["chase", "pulse", "sparkle"] if music.tempo_locked else ["pulse", "sparkle"]
+        elif sustained > MID_ENERGY:
+            candidates = ["wash", "sparkle"]
+        else:
+            candidates = ["wash", "uv", "ambient"]
+        candidates = [c for c in candidates if c in self.looks]
+        if not candidates:
+            return
+        try:
+            idx = candidates.index(self._active)
+        except ValueError:
+            idx = -1
+        pick(candidates[(idx + 1) % len(candidates)])
+
+    def _render_look(self, name: str, music: MusicState, pal, dt: float) -> dict[str, Emission]:
+        """Render one look, swallowing any failure.
+
+        A look is the most likely thing in this project to be edited at 1am, so
+        a bug in one must not take the rig down. An empty result leaves the
+        fixtures where they were.
+        """
+        try:
+            return self.looks[name].render(music, pal, dt) or {}
+        except Exception as e:
+            self._errors += 1
+            self._last_error = f"{name}: {e}"
+            if self._errors % 50 == 1:
+                log.exception("look %s failed", name)
+            return {}
+
+    def tick(self, dt: float) -> None:
+        self._ticks += 1
+        self._pull_audio()
+
+        music = self._music
+        if music is None:
+            # No audio yet. Synthesise a silent state so looks still animate --
+            # ambient should breathe before the first track starts.
+            music = MusicState(frame=FeatureFrame(t=time.monotonic(), rms=0.0,
+                                                  loudness_db=-120.0, energy=0.0))
+
+        # Track sustained energy before anything reads it.
+        self._energy_env.update(0.0 if music.silent else music.energy)
+
+        state = self.state
+        pal = palettes.get(state.palette)
+
+        # Honour the host's choice in manual mode; otherwise let the music pick.
+        if state.mode == "manual":
+            if state.look != self._active:
+                self.select(state.look)
+        else:
+            self._choose_auto(music)
+
+        # Enforce the strobe time limit regardless of mode.
+        if not state.strobe_allowed(self._active):
+            log.info("Strobe time limit reached (%.1fs) — falling back to pulse",
+                     state.max_strobe_seconds)
+            state.set_look("pulse")
+            self.select("pulse")
+
+        emissions = self._render_look(self._active, music, pal, dt)
+
+        # Crossfade out of the previous look.
+        if self._fade < 1.0 and self._previous:
+            self._fade = min(1.0, self._fade + dt / FADE_S)
+            old = self._render_look(self._previous, music, pal, dt)
+            blended: dict[str, Emission] = {}
+            for f in self.patch:
+                a = old.get(f.fid, BLACK)
+                b = emissions.get(f.fid, BLACK)
+                blended[f.fid] = a.blended(b, self._fade)
+            emissions = blended
+            if self._fade >= 1.0:
+                self._previous = None
+
+        # Manual overrides sit above the looks: a fixture the host has taken is
+        # not touched by whatever the music is doing.
+        for fid, em in state.active_manual().items():
+            emissions[fid] = em
+
+        master = state.master
+        for f in self.patch:
+            em = emissions.get(f.fid, BLACK)
+            if master < 1.0:
+                em = em.with_intensity(master)
+            try:
+                f.render_into(self.universe, em)
+            except Exception as e:
+                self._errors += 1
+                self._last_error = f"{f.fid}: {e}"
+
+    # -- lifecycle -------------------------------------------------------
+
+    def run(self) -> None:
+        period = 1.0 / self.tick_hz
+        last = time.monotonic()
+        log.info("Engine running at %.0f Hz, look=%s", self.tick_hz, self._active)
+        while not self._stop.is_set():
+            now = time.monotonic()
+            dt = now - last
+            last = now
+            try:
+                self.tick(min(dt, 0.25))
+            except Exception as e:
+                # Last line of defence. The writer thread keeps sending the last
+                # good frame, so the room stays lit while we log and continue.
+                self._errors += 1
+                self._last_error = str(e)
+                if self._errors % 50 == 1:
+                    log.exception("engine tick failed")
+            slack = period - (time.monotonic() - now)
+            if slack > 0:
+                time.sleep(slack)
+        log.info("Engine stopped after %d ticks (%d errors)", self._ticks, self._errors)
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self.run, name="Engine", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+        self._thread = None
