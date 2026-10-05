@@ -67,18 +67,26 @@ class OpenDmxSerialDriver(Driver):
     def open(self) -> None:
         if serial is None:
             raise DriverError("pyserial is not installed — pip install pyserial")
+        # RTS and DTR must be OFF. On this interface (an Open DMX clone) they
+        # gate the line driver: with them asserted the frames leave the Mac but
+        # nothing reaches the cable, and receivers report no signal. pyserial
+        # asserts both on open by default, so they are set before open() rather
+        # than after, which would leave a window of dead output.
+        ser = serial.Serial()
+        ser.port = self.port
+        ser.baudrate = DMX_BAUD
+        ser.bytesize = serial.EIGHTBITS
+        ser.parity = serial.PARITY_NONE
+        ser.stopbits = serial.STOPBITS_TWO
+        ser.timeout = 0
+        ser.write_timeout = 0.5
+        ser.rtscts = False
+        ser.dsrdtr = False
+        ser.rts = False
+        ser.dtr = False
         try:
-            self._ser = serial.Serial(
-                port=self.port,
-                baudrate=DMX_BAUD,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_TWO,
-                timeout=0,
-                write_timeout=0.5,
-                rtscts=False,
-                dsrdtr=False,
-            )
+            ser.open()
+            self._ser = ser
         except Exception as e:
             raise DriverError(f"could not open {self.port}: {e}") from e
         log.info("Open DMX USB ready on %s (break_mode=%s)", self.port, self.break_mode)

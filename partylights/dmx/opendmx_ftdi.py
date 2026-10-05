@@ -77,6 +77,10 @@ class OpenDmxFtdiDriver(Driver):
         try:
             ftdi.set_baudrate(DMX_BAUD)
             ftdi.set_line_property(8, 2, "N")
+            # Off, as in the serial driver: on Open DMX clones these lines
+            # can gate the line driver, and asserted means no output at all.
+            ftdi.set_rts(False)
+            ftdi.set_dtr(False)
             ftdi.purge_buffers()
         except Exception as e:
             ftdi.close()
