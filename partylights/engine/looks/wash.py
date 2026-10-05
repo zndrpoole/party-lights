@@ -18,14 +18,17 @@ from .base import Look
 #: fixtures stay related; a full span makes the room look like a paint chart.
 SPREAD = 0.45
 #: Seconds for the gradient to drift one full palette cycle.
-DRIFT_S = 50.0
-#: Floor brightness, so the room is never actually dark mid-track.
-BASE = 0.12
+DRIFT_S = 80.0
+#: Floor brightness, so the room is never actually dark mid-track. Kept above
+#: the PARs' min_dimmer (about 0.28), below which they cannot hold the colour.
+BASE = 0.30
 
 
 class WashLook(Look):
     name = "wash"
     description = "Colour gradient across the room, brightness follows the mix"
+    #: Output release. Short or long because it is the drifting look.
+    release_s = 0.45
 
     def __init__(self, patch):
         super().__init__(patch)
@@ -44,8 +47,10 @@ class WashLook(Look):
         high = max(music.smooth("high"), music.smooth("air"))
 
         # Brightness: mostly low end, with a little from the whole mix so a
-        # bassless passage does not go dark.
-        drive = clamp(0.70 * low + 0.30 * music.energy)
+        # bassless passage does not go dark. The whole-mix share is kept small
+        # because music.energy is instantaneous and spikes on every transient;
+        # at 0.30 it made the wash shimmer instead of breathe.
+        drive = clamp(0.85 * low + 0.15 * music.energy)
 
         # Brighter-sounding music drifts further along the palette. Smoothed
         # heavily because the raw centroid is jittery and colour flicker is far

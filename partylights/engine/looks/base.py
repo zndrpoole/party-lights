@@ -28,6 +28,15 @@ class Look:
     #: Whether this look needs a locked tempo to make sense. The engine avoids
     #: selecting these in auto mode until the tempo tracker has locked.
     needs_tempo = False
+    #: Seconds for brightness to fall in the engine's output smoothing, or None
+    #: for the global engine.release_ms. Crisp looks set it short so their hits
+    #: snap; drifting looks set it long. The contrast between the two is what
+    #: stops every look reading as the same slow wave.
+    release_s: float | None = None
+    #: Set by the engine every tick from the softness control: multiply any
+    #: decay or envelope time by this. 1.0 is the tuning as written; above
+    #: is smoother, below is sharper. Motion speeds are deliberately exempt.
+    time_scale: float = 1.0
 
     def __init__(self, patch: Patch):
         self.patch = patch
@@ -44,6 +53,19 @@ class Look:
         raise NotImplementedError
 
     # -- helpers for subclasses ------------------------------------------
+
+    @staticmethod
+    def colour_step(music, bars: int, kicks: int, kick_count: int) -> int:
+        """Which palette step to show: one per `bars` bars when the tempo is
+        locked, else one per `kicks` detected kicks.
+
+        Bars are preferred because the kick detector also fires on other low
+        hits; on the real rig, counting kicks changed colour several times
+        faster than intended.
+        """
+        if music.tempo_locked:
+            return (music.beat_index // 4) // bars
+        return kick_count // kicks
 
     def all_black(self) -> dict[str, Emission]:
         return {f.fid: BLACK for f in self.patch}

@@ -7,9 +7,13 @@ needs to know about it.
 from .ambient import AmbientLook
 from .base import Look
 from .chase import ChaseLook
+from .hush import HushLook
+from .mirror import MirrorLook
 from .pulse import PulseLook
 from .sparkle import SparkleLook
 from .strobe import BlinderLook, StrobeLook
+from .swell import SwellLook
+from .unison import UnisonLook
 from .uv_accent import UvAccentLook
 from .wash import WashLook
 
@@ -17,10 +21,14 @@ from .wash import WashLook
 LOOKS: tuple[type[Look], ...] = (
     AmbientLook,
     WashLook,
+    SwellLook,
     PulseLook,
+    UnisonLook,
+    MirrorLook,
     ChaseLook,
     SparkleLook,
     UvAccentLook,
+    HushLook,
     StrobeLook,
     BlinderLook,
 )

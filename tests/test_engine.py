@@ -42,8 +42,352 @@ def drive(engine, signal, ticks_per_second=100):
     for i in range(0, len(signal), hop):
         out = engine.analyser.feed(signal[i : i + hop])
         if out:
-            engine._music = out[-1]
+            engine._music = engine._merge(out)
         engine.tick(1.0 / ticks_per_second)
+
+
+# -- one tick, several analysis frames ---------------------------------------
+#
+# Bug guarded: the engine kept only the newest frame of each tick, so a kick in
+# an earlier hop never reached the looks (or the UI), and a tick with no new
+# frame re-served the old one, firing the same hit twice.
+
+def _hit(t, region=None, events=()):
+    onsets = {r: r == region for r in ("kick", "snare", "hat")}
+    return MusicState(frame=FeatureFrame(t=t, rms=0.1, loudness_db=-20.0, energy=0.5,
+                                         onsets=onsets, silent=False), events=list(events))
+
+
+def test_a_hit_in_an_earlier_frame_of_the_tick_is_kept(rig):
+    engine = rig[3]
+    merged = engine._merge([_hit(1.0, "kick", ["drop"]), _hit(1.01, "snare")])
+    assert merged.onset("kick") and merged.onset("snare")
+    assert merged.t == 1.01 and merged.events == ["drop"]
+    assert engine.onset_counts == {"kick": 1, "snare": 1}
+
+
+def test_a_tick_without_new_audio_does_not_repeat_the_hit(rig):
+    engine = rig[3]
+    engine._music = engine._merge([_hit(1.0, "kick", ["drop"])])
+    quiet = engine._quiet(engine._music)
+    assert not quiet.onset("kick") and quiet.events == [] and quiet.energy == 0.5
+
+
+# -- output smoothing -------------------------------------------------------
+#
+# Bug guarded: on the real rig `pulse` held the PARs at DMX 1 between kicks with
+# hits gone in under 100 ms, which reads as flicker. The smoother gives every look
+# a fast attack and a slow release so hits still land but fall as a fade.
+
+def _level(engine, em, ticks, dt=0.01):
+    from partylights.fixtures.color import Emission
+    for _ in range(ticks):
+        out = engine._smooth({"par1": Emission(rgb=(1, 1, 1), intensity=em)}, dt)
+    return out["par1"].intensity
+
+
+def test_smoothing_is_off_by_default(rig):
+    _, _, _, engine, _ = rig
+    _level(engine, 1.0, 1)
+    assert _level(engine, 0.0, 1) == 0.0
+
+
+def test_smoothing_attack_is_fast_and_release_is_slow(rig):
+    _, _, _, engine, _ = rig
+    engine.attack_s, engine.release_s = 0.015, 0.22
+    engine.looks[engine.active_look].release_s = None   # use the global release
+    _level(engine, 0.0, 1)
+    # A hit lands almost fully within 50 ms ...
+    assert _level(engine, 1.0, 5) > 0.95
+    # ... but after the look drops to dark, 100 ms later it is still glowing ...
+    assert _level(engine, 0.0, 10) > 0.5
+    # ... and it has faded out within about a second.
+    assert _level(engine, 0.0, 90) < 0.02
+
+
+def test_a_look_can_set_its_own_release(rig):
+    """Crisp looks snap off, drifting looks roll off: the contrast matters."""
+    _, _, _, engine, _ = rig
+    engine.attack_s, engine.release_s = 0.015, 0.35
+    engine.select("unison")                       # release_s 0.12
+    _level(engine, 1.0, 20)
+    crisp = _level(engine, 0.0, 30)               # 300 ms after the drop
+    engine.looks["unison"].release_s = None       # fall back to the global 0.35
+    _level(engine, 1.0, 20)
+    soft = _level(engine, 0.0, 30)
+    assert crisp < 0.1 < soft
+
+
+def test_softness_scales_every_fade(rig):
+    """One control for the feel: x0.25 fully sharp, x4 fully smooth."""
+    _, _, state, engine, _ = rig
+    state.set_softness(5.0)
+    assert state.softness == 1.0 and state.softness_scale() == 4.0
+    state.set_softness(-1.0)
+    assert state.softness_scale() == 0.25
+
+    engine.attack_s, engine.release_s = 0.015, 0.35
+    engine.looks[engine.active_look].release_s = None
+    tails = {}
+    for soft in (-1.0, 0.0, 1.0):
+        state.set_softness(soft)
+        _level(engine, 1.0, 50)
+        tails[soft] = _level(engine, 0.0, 30)          # 300 ms after the drop
+    assert tails[-1.0] < tails[0.0] < tails[1.0]
+
+
+def test_softness_reaches_the_looks_own_decays(rig):
+    patch, universe, state, engine, _ = rig
+    levels = {}
+    for soft in (-1.0, 1.0):
+        state.set_softness(soft)
+        engine.tick(0.01)                               # engine hands looks the scale
+        look = engine.looks["unison"]
+        look.reset()
+        pal = palettes.get("halloween")
+        look.render(kick_state(0.0, kick=True), pal, 0.025)
+        for k in range(12):                             # 300 ms after the hit
+            out = look.render(kick_state(0.025 * k), pal, 0.025)
+        levels[soft] = out["par1"].intensity
+    assert levels[-1.0] < levels[1.0]
+
+
+def test_manual_override_is_not_smoothed(rig):
+    """A fixture the host grabs, or a blackout, must respond on the next tick."""
+    patch, universe, state, engine, _ = rig
+    engine.attack_s, engine.release_s = 0.015, 5.0
+    state.update_manual("par1", active=True, rgb=(1, 1, 1), intensity=1.0)
+    engine.tick(0.01)
+    state.update_manual("par1", active=True, rgb=(1, 1, 1), intensity=0.0)
+    engine.tick(0.01)
+    f = patch.by_id["par1"]
+    assert universe.buffer()[f.address - 1] == 0
+
+
+# -- test bench -------------------------------------------------------------
+
+def test_bench_bytes_reach_the_universe_verbatim(rig):
+    """The bench exists to probe the fixture, so nothing may reshape its bytes:
+    not the look, not the master, and not min_dimmer (14 would otherwise be 0)."""
+    patch, universe, state, engine, _ = rig
+    state.set_master(0.2)
+    state.set_raw("par1", {"dimmer": 14, "red": 255, "green": 51, "blue": 0})
+    engine.tick(0.01)
+    f = patch.by_id["par1"]
+    assert list(universe.buffer()[f.address - 1 : f.last_channel]) == [14, 255, 51, 0, 0, 0, 0]
+
+
+def test_bench_release_hands_the_fixture_back(rig):
+    patch, universe, state, engine, _ = rig
+    state.set_raw("par1", {"dimmer": 14})
+    state.release_raw(["par1"])
+    engine.tick(0.01)
+    assert universe.buffer()[patch.by_id["par1"].address - 1] != 14
+    assert state.active_raw() == {}
+
+
+def test_bench_cannot_touch_strobe_or_mode_channels(rig):
+    patch, *_ = rig
+    out = patch.by_id["par1"].profile.raw_frame({"dimmer": 255, "strobe": 200, "fixed": 99})
+    assert list(out) == [255, 0, 0, 0, 0, 0, 0]
+
+
+def test_bench_api_validates_input(rig):
+    patch, universe, state, engine, cues = rig
+    from partylights.web.server import create_app
+    client = create_app(patch=patch, universe=universe, state=state, engine=engine,
+                        cues=cues, tuning_path=Path("/nonexistent/tuning.json")).test_client()
+    ok = client.post("/api/bench", json={"group": "pars", "values": {"dimmer": 14}})
+    assert ok.status_code == 200 and len(ok.get_json()["held"]) == 12
+    assert client.post("/api/bench", json={"ids": ["par1"], "values": {"strobe": 9}}).status_code == 400
+    assert client.post("/api/bench", json={"ids": ["par1"], "values": {"dimmer": 300}}).status_code == 400
+    assert client.post("/api/bench/release", json={}).get_json() == {"held": {}}
+
+
+# -- swell look and presets --------------------------------------------------
+
+from partylights.engine.looks.swell import HOLD_S, MIN_HOLD_S, SwellLook
+from partylights.audio.structure import SECTION_CHANGE
+
+
+def loud_state(t=0.0, level=0.9, events=()):
+    frame = FeatureFrame(t=t, rms=0.3, loudness_db=-10.0, energy=level, silent=False,
+                         bands_smooth={"bass": level, "sub": level})
+    return MusicState(frame=frame, events=list(events))
+
+
+def _run_swell(look, seconds, state_at, dt=0.025):
+    """Render for a while; returns per-tick {fid: Emission}."""
+    pal = palettes.get("halloween-deep")
+    frames = []
+    for k in range(int(seconds / dt)):
+        frames.append(look.render(state_at(k * dt), pal, dt))
+    return frames
+
+
+def test_swell_never_dips_below_the_par_cutoff(rig):
+    """Below min_dimmer the PARs are cut to black, so a dip there is a blink."""
+    patch, *_ = rig
+    cutoff = (patch.by_id["par1"].profile.min_dimmer / 255) ** (1 / 2.2)
+    look = SwellLook(patch)
+    frames = _run_swell(look, 40, lambda t: silent_state(t) if int(t) % 8 < 4 else loud_state(t))
+    lowest = min(em.intensity for fr in frames for fid, em in fr.items() if fid.startswith("par"))
+    assert lowest > cutoff + 0.03
+
+
+def test_swell_holds_colour_then_rolls_to_the_next(rig):
+    patch, *_ = rig
+    look = SwellLook(patch)
+    frames = _run_swell(look, HOLD_S + 12, lambda t: loud_state(t))
+    held = {fr["par1"].rgb for fr in frames[: int((HOLD_S - 1) / 0.025)]}
+    assert len(held) == 1
+    assert frames[-1]["par1"].rgb != frames[0]["par1"].rgb
+
+
+def test_swell_does_not_show_individual_hits(rig):
+    patch, *_ = rig
+    look = SwellLook(patch)
+    frames = _run_swell(look, 4, lambda t: loud_state(t) if 2.0 <= t < 2.1 else silent_state(t))
+    before, after = frames[int(1.9 / 0.025)]["par1"], frames[int(2.2 / 0.025)]["par1"]
+    assert abs(after.intensity - before.intensity) < 0.08
+
+
+def test_swell_section_change_rotates_only_after_min_hold(rig):
+    patch, *_ = rig
+    look = SwellLook(patch)
+    early = lambda t: loud_state(t, events=[SECTION_CHANGE] if abs(t - 5.0) < 0.01 else [])
+    _run_swell(look, 6, early)
+    assert look._offset == 0
+    late = lambda t: loud_state(t, events=[SECTION_CHANGE] if abs(t - (MIN_HOLD_S - 6 + 1)) < 0.01 else [])
+    _run_swell(look, MIN_HOLD_S - 6 + 2, late)
+    assert look._offset == 1
+
+
+def test_swell_pairs_orange_with_purple(rig):
+    patch, *_ = rig
+    fr = SwellLook(patch).render(silent_state(), palettes.get("halloween-deep"), 0.025)
+    r1, _, b1 = fr["par1"].rgb
+    r4, _, b4 = fr["par4"].rgb
+    assert r1 == 1.0 and b1 == 0.0      # orange block
+    assert b4 == 1.0 and r4 < 0.8       # purple block
+
+
+def test_preset_cue_sets_look_and_palette_and_holds(rig):
+    patch, universe, state, engine, cues = rig
+    out = cues.fire("preset/halloween-smooth")
+    assert out["look"] == "swell" and out["palette"] == "halloween-deep"
+    assert state.mode == "manual" and state.palette == "halloween-deep"
+    assert "preset/halloween-smooth" in cues.available()
+
+
+# -- variety: unison, mirror, hush, drop hit ---------------------------------
+
+from partylights.engine.engine import DROP, BREAKDOWN
+
+
+def kick_state(t=0.0, kick=False, **kw):
+    frame = FeatureFrame(t=t, rms=0.3, loudness_db=-10.0, energy=0.8, silent=False,
+                         bands_smooth={"bass": 0.6}, onsets={"kick": kick},
+                         onset_strength={"kick": 0.8 if kick else 0.0})
+    return MusicState(frame=frame, **kw)
+
+
+def _kicks_every(period):
+    return lambda t: kick_state(t, kick=(int(t / 0.025) % int(period / 0.025) == 0))
+
+
+def test_no_steady_look_parks_the_pars_below_the_cutoff(rig):
+    """Between 0 and min_dimmer a PAR is cut to black, so a look that sits there
+    blinks. Pulse is exempt: fading through it to black is its design."""
+    patch, *_ = rig
+    cutoff = (patch.by_id["par1"].profile.min_dimmer / 255) ** (1 / 2.2)
+    pal = palettes.get("halloween")
+    for name in ("ambient", "wash", "swell", "unison", "mirror", "chase",
+                 "sparkle", "uv", "hush"):
+        look = BY_NAME[name](patch)
+        state_at = _kicks_every(0.45)
+        for k in range(int(20 / 0.025)):
+            t = k * 0.025
+            for fid, em in look.render(state_at(t), pal, 0.025).items():
+                if fid.startswith("par"):
+                    assert not (0.0 < em.intensity < cutoff), (name, t, fid, em.intensity)
+
+
+def test_unison_moves_the_whole_room_together(rig):
+    patch, *_ = rig
+    look = BY_NAME["unison"](patch)
+    pal = palettes.get("halloween")
+    quiet = look.render(kick_state(0.0), pal, 0.025)
+    hit = look.render(kick_state(0.025, kick=True), pal, 0.025)
+    pars = [f.fid for f in patch.group("pars")]
+    assert len({(hit[f].rgb, hit[f].intensity) for f in pars}) == 1
+    assert hit["par1"].intensity > quiet["par1"].intensity + 0.2
+
+
+def test_mirror_is_symmetric_and_bursts_outward(rig):
+    patch, *_ = rig
+    look = BY_NAME["mirror"](patch)
+    pal = palettes.get("halloween")
+    look.render(kick_state(0.0, kick=True), pal, 0.025)
+    early = look.render(kick_state(0.05), pal, 0.025)
+    for _ in range(16):                           # ring reaches the ends at 0.45 s
+        late = look.render(kick_state(0.3), pal, 0.025)
+    pars = [f.fid for f in patch.group("pars")]
+    for a, b in zip(pars, reversed(pars)):
+        assert abs(early[a].intensity - early[b].intensity) < 1e-9
+    # Early on the centre is brightest; later the ring has reached the ends.
+    assert early["par6"].intensity > early["par1"].intensity
+    assert late["par1"].intensity > late["par6"].intensity
+
+
+def test_colour_follows_bars_not_kicks_when_tempo_is_locked(rig):
+    """The kick detector over-counts; on the rig, kick-counted colour changed
+    several times faster than intended. With a lock, bars decide."""
+    patch, *_ = rig
+    pal = palettes.get("halloween")
+    for name in ("pulse", "mirror", "unison"):
+        look = BY_NAME[name](patch)
+        colours = {look.render(kick_state(k * 0.025, kick=True, tempo_locked=True,
+                                          beat_index=5), pal, 0.025)["par1"].rgb
+                   for k in range(200)}
+        assert len(colours) == 1, name
+
+
+def test_breakdown_goes_to_hush_and_energy_brings_it_back(rig):
+    patch, universe, state, engine, _ = rig
+    engine._energy_env._value = 0.5
+    engine._choose_auto(kick_state(40.0, events=[BREAKDOWN]))
+    assert engine.active_look == "hush"
+    out = engine.looks["hush"].render(kick_state(40.0), palettes.get("halloween"), 0.025)
+    assert all(out[f.fid].intensity == 0.0 for f in patch.group("pars"))
+    assert out["accent"].uv > 0.6
+    engine._choose_auto(kick_state(41.0))         # energy is still up: leave at once
+    assert engine.active_look != "hush"
+
+
+def test_drop_hits_the_whole_room_then_settles(rig):
+    patch, universe, state, engine, _ = rig
+    engine._energy_env._value = 0.7
+    engine._choose_auto(kick_state(40.0, events=[DROP]))
+    assert engine.active_look == "unison"
+    pal = palettes.get("halloween")
+    hit = engine._drop_hit({}, pal, 0.01)
+    assert all(hit[f.fid].intensity == 1.0 for f in patch)
+    for _ in range(300):
+        engine._drop_hit({}, pal, 0.01)
+    assert engine._flash == 0.0
+
+
+def test_busy_auto_rotation_alternates_still_and_moving_looks(rig):
+    patch, universe, state, engine, _ = rig
+    engine._energy_env._value = 0.8
+    seen = []
+    t = 0.0
+    for _ in range(4):
+        t += 40.0
+        engine._choose_auto(kick_state(t, tempo_locked=True))
+        seen.append(engine.active_look)
+    assert seen.count("chase") <= 1 and {"unison", "mirror"} <= set(seen)
 
 
 # -- palettes ---------------------------------------------------------------

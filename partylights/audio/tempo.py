@@ -31,6 +31,23 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+#: Comb strength needed to call the tempo locked. A clean drum loop scores
+#: ~0.8; a busy bass-heavy mix ~0.1 with the right tempo; noise sits near 0.
+LOCK_CONFIDENCE = 0.08
+#: Consecutive agreeing estimates needed as well: noise can score a fluke comb
+#: peak, but its winning tempo wanders from one estimate to the next.
+LOCK_AGREE = 3
+#: Period scoring: (multiple of the beat, weight) summed from the ACF.
+COMB = ((1, 1.0), (2, 0.6), (4, 0.4))
+#: Estimates within this fraction of the current tempo count as the same tempo.
+SAME_TEMPO = 0.04
+#: Consecutive estimates a different tempo must win before we switch to it.
+SWITCH_AFTER = 4
+#: How far each estimate pulls the clock toward the measured beat, 0..1.
+PHASE_PULL = 0.5
+#: Flux peaks the frame after a hit enters the window; compensate.
+DETECT_LAG_FRAMES = 1.0
+
 
 class TempoTracker:
     """Estimates tempo and maintains a beat phase clock.
@@ -70,6 +87,9 @@ class TempoTracker:
         self.phase = 0.0
         self.beat_index = 0
         self._beat_fired = False
+        self._challenger = 0.0
+        self._challenger_n = 0
+        self._agree = 0
 
         # Lag search range, in envelope samples.
         self._min_lag = max(2, int(round(60.0 / max_bpm * rate_hz)))
@@ -85,7 +105,8 @@ class TempoTracker:
     @property
     def locked(self) -> bool:
         """Whether phase is trustworthy enough for a look to drive from it."""
-        return self.bpm > 0 and self.confidence >= 0.25
+        return (self.bpm > 0 and self.confidence >= LOCK_CONFIDENCE
+                and self._agree >= LOCK_AGREE)
 
     @property
     def bar_phase(self) -> float:
@@ -117,101 +138,138 @@ class TempoTracker:
     def update(self, onset_strength: float, t: float, *, onset: bool = False) -> None:
         """Advance the tracker by one analysis frame.
 
-        `onset_strength` should be a continuous beat-salience signal (kick flux
-        works well); `onset` marks a discrete detected hit, which is what the
-        PLL corrects against.
+        `onset_strength` is a continuous beat-salience signal (broadband flux);
+        `onset` is accepted for compatibility but no longer steers the clock:
+        on a bass-heavy mix kick onsets land all over the beat, and correcting
+        phase toward them pulled the clock off it.
         """
         self._env.append(float(onset_strength))
 
         dt = 0.0 if self._last_t is None else max(0.0, t - self._last_t)
         self._last_t = t
 
-        if t - self._last_estimate_t >= self.estimate_every_s and len(self._env) >= self._max_lag * 2:
-            self._estimate_period()
-            self._last_estimate_t = t
-
         self._beat_fired = False
         period = self.beat_period
-        if period <= 0:
-            return
+        if period > 0:
+            # Free-run the clock.
+            self.phase += dt / period
+            while self.phase >= 1.0:
+                self.phase -= 1.0
+                self.beat_index += 1
+                self._beat_fired = True
 
-        # Free-run the clock.
-        self.phase += dt / period
-        while self.phase >= 1.0:
-            self.phase -= 1.0
-            self.beat_index += 1
-            self._beat_fired = True
-
-        # Correct against an observed hit.
-        if onset and self.confidence > 0.15:
-            # Signed distance from this onset to the nearest predicted beat, in
-            # beats. Positive means the onset landed after our predicted beat,
-            # i.e. our clock is running ahead.
-            err = self.phase if self.phase < 0.5 else self.phase - 1.0
-            self.phase -= self.phase_gain * err
-            if self.phase < 0.0:
-                self.phase += 1.0
-            # Persistent error means the period itself is off, not just phase.
-            if self.bpm > 0:
-                self.bpm /= (1.0 + self.period_gain * err)
-                self.bpm = float(np.clip(self.bpm, self.min_bpm, self.max_bpm))
+        if t - self._last_estimate_t >= self.estimate_every_s and len(self._env) >= self._max_lag * 2:
+            self._estimate_period()
+            self._correct_phase()
+            self._last_estimate_t = t
 
     # -- period estimation ------------------------------------------------
 
-    def _estimate_period(self) -> None:
+    def _acf(self) -> np.ndarray | None:
         env = np.fromiter(self._env, dtype=np.float64, count=len(self._env))
         env = env - env.mean()
         if not np.any(env):
-            self.confidence = 0.0
-            return
-
-        # Autocorrelation via FFT: cheap enough to run twice a second.
+            return None
         n = 1 << int(np.ceil(np.log2(len(env) * 2)))
         spec = np.fft.rfft(env, n)
         acf = np.fft.irfft(spec * np.conj(spec), n)[: len(env)]
         if acf[0] <= 0:
+            return None
+        return acf / acf[0]
+
+    def _estimate_period(self) -> None:
+        acf = self._acf()
+        if acf is None:
             self.confidence = 0.0
             return
-        acf /= acf[0]
-
-        hi = min(self._max_lag, len(acf) - 1)
+        hi = min(self._max_lag, (len(acf) - 1) // 4)
         if hi <= self._min_lag:
             self.confidence = 0.0
             return
 
-        lags = np.arange(self._min_lag, hi + 1)
-        scores = acf[self._min_lag : hi + 1].copy()
+        # Score each period by the ACF at 1, 2 and 4 beats, at sub-sample
+        # resolution. A real beat repeats every bar as well as every beat; a
+        # triplet or 3:4 pattern that happens to peak at one lag does not line
+        # up at its multiples. Single-lag scoring is what let this flip between
+        # 106, 114 and 160 BPM on a 160 BPM track.
+        lags = np.arange(self._min_lag, hi + 0.001, 0.25)
+        idx = np.arange(len(acf))
+        scores = sum(w * np.interp(k * lags, idx, acf) for k, w in COMB)
+        scores = np.maximum(scores, 0.0)
 
-        # Prior over tempo. Without this, autocorrelation happily locks onto
-        # half or double the real tempo -- it is genuinely periodic there too.
+        # Prior over tempo, for the remaining octave ambiguity.
         cand_bpm = 60.0 * self.rate_hz / lags
-        log_ratio = np.log2(cand_bpm / self.prior_bpm)
-        scores *= np.exp(-0.5 * (log_ratio / self.prior_width) ** 2)
+        prior = np.exp(-0.5 * (np.log2(cand_bpm / self.prior_bpm) / self.prior_width) ** 2)
+        weighted = scores * prior
 
-        best = int(np.argmax(scores))
-        peak = float(scores[best])
-        if peak <= 0:
+        best = int(np.argmax(weighted))
+        if weighted[best] <= 0:
             self.confidence = 0.0
             return
-
         bpm = float(cand_bpm[best])
-        # Confidence: how much the winning peak stands out from the field.
-        mean_score = float(np.mean(scores))
-        self.confidence = float(np.clip((peak - mean_score) / (peak + 1e-9), 0.0, 1.0))
+        # Confidence: comb strength at the winner, 0..1 (a perfect pulse train
+        # scores sum(weights)). Unlike peak-versus-mean, this is low when the
+        # music is not periodic, so `locked` can actually mean something.
+        strength = float(np.clip(scores[best] / sum(w for _, w in COMB), 0.0, 1.0))
 
         if self.bpm <= 0:
             self.bpm = bpm
-            log.info("Tempo locked: %.1f BPM (confidence %.2f)", bpm, self.confidence)
+            self._challenger, self._challenger_n = 0.0, 0
+            self._agree = 0
+            self.confidence = strength
+            log.info("Tempo locked: %.1f BPM (strength %.2f)", bpm, strength)
+            return
+
+        if abs(bpm - self.bpm) / self.bpm <= SAME_TEMPO:
+            # Same tempo: refine gently.
+            self.bpm += 0.3 * (bpm - self.bpm)
+            self._agree += 1
+            self._challenger, self._challenger_n = 0.0, 0
+            self.confidence += 0.3 * (strength - self.confidence)
+            return
+
+        # A different tempo has to win several estimates in a row before we
+        # follow it. One ambiguous window must not move the whole rig; a real
+        # track change still gets through in about two seconds.
+        if self._challenger and abs(bpm - self._challenger) / self._challenger <= SAME_TEMPO:
+            self._challenger_n += 1
+            self._challenger += 0.5 * (bpm - self._challenger)
         else:
-            # Jump to a clearly different tempo (new track); otherwise glide, so
-            # a momentarily ambiguous estimate does not jerk the whole rig.
-            if abs(bpm - self.bpm) / self.bpm > 0.12:
-                log.info("Tempo changed: %.1f -> %.1f BPM (confidence %.2f)",
-                         self.bpm, bpm, self.confidence)
-                self.bpm = bpm
-                self.phase = 0.0
-            else:
-                self.bpm += 0.25 * (bpm - self.bpm)
+            self._challenger, self._challenger_n = bpm, 1
+        self.confidence *= 0.85
+        self._agree = 0
+        if self._challenger_n >= SWITCH_AFTER:
+            log.info("Tempo changed: %.1f -> %.1f BPM", self.bpm, self._challenger)
+            self.bpm = self._challenger
+            self.confidence = strength
+            self._challenger, self._challenger_n = 0.0, 0
+
+    def _correct_phase(self) -> None:
+        """Pull the clock toward where the recent beats actually were.
+
+        Folds the salience history at the current period and finds the offset
+        with the most energy: every hit in the window votes, so a bass note
+        between beats is outvoted by the beats themselves.
+        """
+        period = self.beat_period
+        if period <= 0:
+            return
+        p = period * self.rate_hz  # frames per beat
+        env = np.fromiter(self._env, dtype=np.float64, count=len(self._env))
+        n = len(env)
+        k = np.arange(int((n - 2) // p))
+        if len(k) < 4:
+            return
+        # Newer beats count more, so a drifting tempo is tracked, not averaged.
+        weight = 0.85 ** k
+        offsets = np.arange(0.0, p, 0.25)
+        idx = n - 1 - offsets[:, None] - k[None, :] * p
+        votes = (np.interp(idx, np.arange(n), env) * weight).sum(axis=1)
+        since = offsets[int(np.argmax(votes))] + DETECT_LAG_FRAMES  # frames since the last beat
+        target = (since / p) % 1.0
+        err = target - self.phase
+        err -= round(err)  # shortest way round
+        self.phase = (self.phase + PHASE_PULL * err) % 1.0
 
     def reset(self, *, keep_tempo: bool = False) -> None:
         """Clear state. Called on a track change, where the tempo is new."""
@@ -220,6 +278,8 @@ class TempoTracker:
         self.beat_index = 0
         self._beat_fired = False
         self._last_estimate_t = -1e9
+        self._challenger, self._challenger_n = 0.0, 0
+        self._agree = 0
         if not keep_tempo:
             self.bpm = 0.0
             self.confidence = 0.0

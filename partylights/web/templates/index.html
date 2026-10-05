@@ -15,6 +15,8 @@
   <span class="pill"><i class="dot" id="d-audio"></i> Audio <b id="s-audio">—</b></span>
   <span class="pill"><i class="dot" id="d-juke"></i> Jukebox <b id="s-juke">—</b></span>
   <span class="spacer"></span>
+  <a href="/viz">Stage view</a>
+  <a href="/bench">Test bench</a>
   <a href="/live">Live page &rarr;</a>
 </header>
 
@@ -29,7 +31,21 @@
     <label class="field">Master <span id="s-master" class="mono">100%</span></label>
     <input type="range" id="r-master" min="0" max="100" value="100">
   </div>
+  <div style="margin-top:14px">
+    <label class="field">Feel <span id="s-soft" class="mono">as tuned</span></label>
+    <input type="range" id="r-soft" min="-100" max="100" step="5" value="0" list="soft-ticks">
+    <datalist id="soft-ticks"><option value="0"></option></datalist>
+    <div class="row" style="justify-content:space-between;font-size:12px;color:var(--dim);margin-top:2px">
+      <span>&larr; Sharp</span><button id="b-soft-reset" style="min-height:30px;padding:2px 10px;font-size:12px">Reset</button><span>Smooth &rarr;</span>
+    </div>
+  </div>
   <div class="note" id="s-track"></div>
+</div>
+
+<div class="panel">
+  <h2>Presets</h2>
+  <div class="row" id="presets"></div>
+  <div class="note">A look and palette together. Takes manual control until Resume auto.</div>
 </div>
 
 <div class="panel">

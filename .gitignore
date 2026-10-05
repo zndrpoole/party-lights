@@ -6,3 +6,7 @@ __pycache__/
 *.log
 # Local overrides: machine-specific ports, audio device names, tuning
 config/settings.local.yaml
+# Fixture arrangement saved from /viz
+config/layout.local.json
+# Live tuning saved from the UI
+config/tuning.local.json

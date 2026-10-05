@@ -164,6 +164,25 @@ def test_strobe_open_value_when_not_strobing():
     assert 8 <= mid <= 255
 
 
+def test_below_min_dimmer_the_fixture_goes_fully_dark():
+    """Below its floor a cheap PAR shows the wrong hue, and one unit on the rig
+    leaked dim red even at dimmer 0. So under min_dimmer, every emitter is 0."""
+    p = FixtureProfile(
+        model="FLOOR", footprint=5, min_dimmer=15,
+        channels=[ChannelSpec(0, "dimmer"), ChannelSpec(1, "red"),
+                  ChannelSpec(2, "green"), ChannelSpec(3, "blue"),
+                  ChannelSpec(4, "strobe", open_value=0, min_rate=8)])
+    orange = (1.0, 0.48, 0.0)
+    assert list(p.render(Emission(rgb=orange, intensity=0.2))) == [0, 0, 0, 0, 0]
+    assert list(p.render(Emission(rgb=orange, intensity=0.0))) == [0, 0, 0, 0, 0]
+    lit = p.render(Emission(rgb=orange, intensity=0.3))
+    assert lit[0] >= 15 and lit[1] == 255
+
+
+def test_min_dimmer_defaults_off(rgb_profile):
+    assert rgb_profile.render(Emission(rgb=(1, 0, 0), intensity=0.1))[1] == 255
+
+
 def test_uv_is_never_derived_from_rgb():
     """UV sits outside the visible gamut, so white must not light it up."""
     p = FixtureProfile(model="UV", footprint=4,

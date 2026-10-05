@@ -40,7 +40,7 @@ audio:
 jukebox:
   # The existing party jukebox. Used for track-change cues and context only;
   # if it is unreachable the lights keep reacting to audio regardless.
-  url: http://localhost:5000
+  url: http://localhost:5001
   poll_seconds: 2.0
   enabled: true
 
@@ -54,4 +54,12 @@ engine:
   # 5 and 30 Hz is the photosensitive-seizure risk band; this caps how long any
   # strobe look can run before it is forced to rest.
   max_strobe_seconds: 4.0
+
+  # Output smoothing, applied to every look. Time constants in milliseconds:
+  # brightness rises with attack_ms and falls with release_ms (it has dropped
+  # ~95% after 3x release_ms). Fast attack keeps hits punchy; a longer release
+  # turns flicker into a fade. 0 disables either side. Manual overrides and
+  # blackout are never smoothed.
+  attack_ms: 40
+  release_ms: 350
   start_look: ambient

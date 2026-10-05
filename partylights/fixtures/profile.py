@@ -41,6 +41,10 @@ log = logging.getLogger(__name__)
 COLOUR_ROLES = {"red", "green", "blue", "white", "amber"}
 KNOWN_ROLES = COLOUR_ROLES | {"dimmer", "uv", "strobe", "fixed"}
 
+#: How amber and UV emitters read on screen, in linear RGB. Display only.
+AMBER_MIX = (1.0, 0.55, 0.0)
+UV_MIX = (0.30, 0.0, 0.65)
+
 
 class ProfileError(ValueError):
     """A profile file is malformed or self-inconsistent."""
@@ -73,6 +77,9 @@ class FixtureProfile:
     channels: list[ChannelSpec]
     label: str = ""
     gamma: float = 2.2
+    #: Lowest dimmer byte at which the fixture still shows the colour it was
+    #: sent. Anything below is sent as fully dark instead. 0 disables.
+    min_dimmer: int = 0
     notes: str = ""
     source: str = ""
 
@@ -149,6 +156,15 @@ class FixtureProfile:
         if self.has("uv"):
             out[self._by_role["uv"]] = gamma_byte(em.uv, self.gamma)
 
+        # Cheap fixtures cannot hold a hue near the bottom of the dimmer: each
+        # emitter drops out at a different level, so orange turns red. Below
+        # the fixture's floor, go fully dark instead -- and zero the emitters
+        # too, since some units leak colour even with the dimmer at 0.
+        if self.has("dimmer") and out[self._by_role["dimmer"]] < self.min_dimmer:
+            for role in ("dimmer", *COLOUR_ROLES, "uv"):
+                if self.has(role):
+                    out[self._by_role[role]] = 0
+
         if self.has("strobe"):
             spec = next(c for c in self.channels if c.role == "strobe")
             if em.strobe <= 0.0:
@@ -158,6 +174,72 @@ class FixtureProfile:
                 out[spec.offset] = spec.min_rate + int(round(span * clamp(em.strobe)))
 
         return out
+
+    #: Roles the test bench may set directly. Strobe and fixed channels are left
+    #: out on purpose: strobe has no time limit there, and a non-zero mode
+    #: channel hands the fixture to its internal programs.
+    BENCH_ROLES = ("dimmer", "red", "green", "blue", "white", "amber", "uv")
+
+    def raw_frame(self, values: dict[str, int]) -> bytearray:
+        """Channel bytes with the given roles set verbatim, for the test bench.
+
+        Starts from a dark render so the fixed channels are still asserted, then
+        writes each value straight through: no gamma, no white/amber
+        extraction, no min_dimmer. Roles this fixture lacks are ignored.
+        """
+        out = self.render(Emission(intensity=0.0))
+        for role, value in values.items():
+            if role in self.BENCH_ROLES and self.has(role):
+                out[self._by_role[role]] = int(value) & 0xFF
+        return out
+
+    def decode(self, raw) -> dict:
+        """Read this fixture's channel bytes back into what the light is doing.
+
+        The inverse of render(), and deliberately working from bytes rather than
+        from the Emission: the visualiser feeds it the exact frame that went to
+        the driver, so it shows blackout, freeze, manual overrides and any
+        profile mistake exactly as the real fixture would.
+
+        Levels are linear light output (DMX drives PWM), not the perceptual
+        level the look asked for; `display` re-encodes them for a screen.
+        """
+        raw = bytes(raw[: self.footprint]).ljust(self.footprint, b"\x00")
+        level = lambda role: raw[self._by_role[role]] / 255.0 if self.has(role) else 0.0
+
+        dimmer = level("dimmer") if self.has("dimmer") else 1.0
+        emitters = {r: round(level(r), 4) for r in self.emitters}
+
+        strobe = None
+        if self.has("strobe"):
+            spec = next(c for c in self.channels if c.role == "strobe")
+            v = raw[spec.offset]
+            span = max(1, spec.max_rate - spec.min_rate)
+            strobe = (v - spec.min_rate) / span if v >= spec.min_rate else 0.0
+
+        # Light output per emitter, mixed into one colour as the eye would see
+        # the fixture from across the room. UV reads as a dim violet.
+        w, a, uv = level("white"), level("amber"), level("uv")
+        lin = [
+            level("red") + w + a * AMBER_MIX[0] + uv * UV_MIX[0],
+            level("green") + w + a * AMBER_MIX[1] + uv * UV_MIX[1],
+            level("blue") + w + a * AMBER_MIX[2] + uv * UV_MIX[2],
+        ]
+        lin = [c * dimmer for c in lin]
+        output = max(lin)
+        # Normalise to keep the hue when emitters stack past full, then
+        # gamma-encode for an sRGB screen.
+        hue = [c / output for c in lin] if output > 1.0 else lin
+        display = [int(round(255 * clamp(c) ** (1 / 2.2))) for c in hue]
+
+        return {
+            "raw": list(raw),
+            "dimmer": round(dimmer, 4),
+            "emitters": emitters,
+            "strobe": None if strobe is None else round(clamp(strobe), 4),
+            "output": round(clamp(output), 4),
+            "display": display,
+        }
 
     # -- loading ----------------------------------------------------------
 
@@ -177,6 +259,7 @@ class FixtureProfile:
             channels=channels,
             label=data.get("label", ""),
             gamma=float(data.get("gamma", 2.2)),
+            min_dimmer=int(data.get("min_dimmer", 0)),
             notes=data.get("notes", ""),
             source=source,
         )

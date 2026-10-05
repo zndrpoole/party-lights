@@ -144,6 +144,11 @@ class Universe:
         with self._lock:
             return bytes(self._snapshot[: self._slot_count])
 
+    def sent_frame(self) -> tuple[int, bytes]:
+        """The frame counter and its bytes, read together under one lock."""
+        with self._lock:
+            return self._frames, bytes(self._snapshot[: self._slot_count])
+
     def buffer(self) -> bytes:
         """What the engine most recently asked for, ignoring freeze/blackout."""
         with self._lock:

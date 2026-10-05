@@ -22,6 +22,14 @@ log = logging.getLogger(__name__)
 #: Step size for the master dimmer cues.
 MASTER_STEP = 0.1
 
+#: A preset is a look and a palette chosen together, fired as one cue. Firing
+#: one takes manual control, like any hand-picked look, so it holds until
+#: resume-auto.
+PRESETS: dict[str, tuple[str, str, str]] = {
+    "halloween-smooth": ("swell", "halloween-deep",
+                         "Held orange and purple, slow swells, no hits"),
+}
+
 
 class CueRouter:
     """Resolves cue names to actions against the engine and universe."""
@@ -82,6 +90,14 @@ class CueRouter:
         self.state.set_palette(name)
         return {"palette": name}
 
+    def preset(self, name: str) -> dict:
+        if name not in PRESETS:
+            raise KeyError(f"unknown preset {name!r}")
+        look, palette, _ = PRESETS[name]
+        self.palette(palette)
+        result = self.look(look)
+        return {"preset": name, "palette": palette, **result}
+
     def master(self, value: float) -> dict:
         self.state.set_master(value)
         return {"master": self.state.master}
@@ -133,6 +149,8 @@ class CueRouter:
                 return self.look(arg)
             if kind == "palette":
                 return self.palette(arg)
+            if kind == "preset":
+                return self.preset(arg)
             if kind == "master":
                 return self.master(float(arg))
 
@@ -147,4 +165,5 @@ class CueRouter:
             "master-up", "master-down", "clear-manual", "resume-auto",
             *(f"look/{n}" for n in LOOKS_BY_NAME),
             *(f"palette/{n}" for n in palettes.names()),
+            *(f"preset/{n}" for n in PRESETS),
         ]

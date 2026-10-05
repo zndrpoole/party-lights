@@ -140,6 +140,8 @@ def cmd_run(args) -> int:
         capture=capture,
         tick_hz=float(settings.get("engine.tick_hz", 100)),
         output_delay_ms=float(settings.get("audio.output_delay_ms", 0)),
+        attack_ms=float(settings.get("engine.attack_ms", 0)),
+        release_ms=float(settings.get("engine.release_ms", 0)),
     )
     cues = CueRouter(engine, universe, state)
 
@@ -205,6 +207,7 @@ def cmd_run(args) -> int:
     print()
     print(f"  Control  http://localhost:{port}/")
     print(f"  Live     http://localhost:{port}/live")
+    print(f"  Stage    http://localhost:{port}/viz")
     print()
 
     try:

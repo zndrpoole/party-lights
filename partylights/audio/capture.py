@@ -199,6 +199,12 @@ class AudioCapture:
             channels=self.channels,
             dtype="float32",
             callback=self._callback,
+            # PortAudio's default is its "high" latency, which on BlackHole is
+            # an ~85 ms host buffer delivered in bursts: measured, blocks were a
+            # median 48 ms old on arrival and the lights trailed the room by
+            # ~100 ms, with hits clumped onto an 85 ms grid. "low" delivers
+            # each 512-sample block as it lands (10.7 ms, steady).
+            latency="low",
         )
         self._stream.start()
         log.info("Capturing from %r at %d Hz, %d ch, %d-sample blocks",

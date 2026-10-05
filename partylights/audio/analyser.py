@@ -35,6 +35,14 @@ log = logging.getLogger(__name__)
 #: anchor for *where* the beat is, even when it does not mark every beat.
 TEMPO_SALIENCE_WEIGHTS = {"kick": 1.0, "snare": 0.7}
 
+#: Regions whose onsets must land near a beat once the tempo is locked.
+BEAT_GATED = ("kick", "snare")
+#: How far from the beat an onset may land and still count, in beats.
+BEAT_GATE_WINDOW = 0.15
+#: Onset strength (0..1) that counts anyway: a hit this far over threshold is a
+#: real syncopated kick, not a bass note.
+BEAT_GATE_PASS = 0.7
+
 
 @dataclass
 class MusicState:
@@ -109,11 +117,12 @@ class Analyser:
         """Push samples; return one MusicState per completed analysis hop."""
         out: list[MusicState] = []
         for frame in self.features.feed(samples):
-            # Period estimation needs kick AND snare; phase correction wants
-            # kick alone. See TEMPO_SALIENCE_WEIGHTS for why.
-            salience = sum(frame.flux.get(k, 0.0) * w
-                           for k, w in TEMPO_SALIENCE_WEIGHTS.items())
+            # Broadband flux carries the beat on any mix; kick and snare flux
+            # keep the backbeat weighting. See TEMPO_SALIENCE_WEIGHTS.
+            salience = frame.beat_flux + sum(frame.flux.get(k, 0.0) * w
+                                             for k, w in TEMPO_SALIENCE_WEIGHTS.items())
             self.tempo.update(salience, frame.t, onset=frame.onsets.get("kick", False))
+            self._gate_to_beat(frame)
             events = self.structure.update(frame)
 
             out.append(MusicState(
@@ -133,6 +142,27 @@ class Analyser:
         if out:
             self.state = out[-1]
         return out
+
+    def _gate_to_beat(self, frame: FeatureFrame) -> None:
+        """Drop weak kick and snare onsets that land between beats.
+
+        The kick region (30-110 Hz) is also where the bass line lives, and the
+        snare region is where vocals and synths live. Measured on a bass-heavy
+        160 BPM track, kick onsets fell evenly across the beat -- every bass
+        note counted as a kick -- so pulse looks flashed off the beat. Once the
+        tempo is locked we know where the beats are, so an onset far from one
+        has to be strong to count. Hats are left alone: they live on the
+        off-beats.
+        """
+        if not self.tempo.locked:
+            return
+        phase = self.tempo.phase
+        off = min(phase, 1.0 - phase)  # distance to the nearest beat, in beats
+        if off <= BEAT_GATE_WINDOW:
+            return
+        for region in BEAT_GATED:
+            if frame.onsets.get(region) and frame.onset_strength.get(region, 0.0) < BEAT_GATE_PASS:
+                frame.onsets[region] = False
 
     def on_track_change(self) -> None:
         """New song: the previous tempo and structure are no longer evidence."""

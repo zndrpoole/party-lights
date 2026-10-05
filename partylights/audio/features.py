@@ -219,6 +219,10 @@ class FeatureFrame:
     bands_smooth: dict[str, float] = field(default_factory=dict)
     #: Per-region spectral flux, normalised.
     flux: dict[str, float] = field(default_factory=dict)
+    #: Broadband spectral flux, every band weighted equally, normalised. The
+    #: tempo tracker's input: on a bass-heavy mix the kick region is mostly
+    #: bass-line notes, but the *whole* spectrum still changes on the beat.
+    beat_flux: float = 0.0
     #: Regions that fired an onset on this frame.
     onsets: dict[str, bool] = field(default_factory=dict)
     #: How far above threshold each region's onset was, 0..1.
@@ -291,6 +295,7 @@ class FeatureExtractor:
         self._band_env = {name: Envelope(0.008, 0.150, self.rate_hz) for name, _, _ in self.bands}
         self._flux_peak = {name: PeakFollower(6.0, self.rate_hz) for name, _, _ in self.regions}
         self._energy_peak = PeakFollower(10.0, self.rate_hz, floor=ENERGY_FLOOR_RMS)
+        self._beat_flux_peak = PeakFollower(6.0, self.rate_hz)
         self._detectors = {
             name: OnsetDetector(
                 sensitivity=onset_sensitivity,
@@ -370,6 +375,10 @@ class FeatureExtractor:
             fired = det.update(norm, self._t) if not silent else False
             onsets[name] = fired
             strengths[name] = det.strength
+        # Equal weight per band rather than per bin: the top octave holds half
+        # the bins, and a per-bin mean would be little more than a hat detector.
+        beat_flux = self._beat_flux_peak.normalise(
+            float(np.mean([np.mean(delta[bins]) for bins in self._band_bins])))
         self._prev_log_mag = log_mag
 
         total = float(spectrum.sum())
@@ -386,6 +395,7 @@ class FeatureExtractor:
             bands_raw=bands_raw,
             bands_smooth=bands_smooth,
             flux=flux,
+            beat_flux=0.0 if silent else beat_flux,
             onsets=onsets,
             onset_strength=strengths,
             centroid=centroid,

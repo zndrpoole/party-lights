@@ -22,13 +22,23 @@ from .base import Look
 #: Width of the travelling head, in fixtures. Below about 1.5 the movement
 #: strobes rather than sweeps.
 WIDTH = 1.9
-#: Residual brightness on fixtures the head has left.
-TAIL = 0.07
+#: Residual brightness on fixtures the head has left, so the run never reads
+#: as dark gaps. Must stay above the PARs' min_dimmer (about 0.28 here) or the
+#: tail is either a wrong hue or cut to black.
+TAIL = 0.30
+#: Bars for one there-and-back. Was 1, which read as frantic at party tempos.
+BARS_PER_SWEEP = 2
+#: Seconds per there-and-back when there is no tempo lock.
+FREE_RUN_S = 4.0
+#: Bars between colour changes: two full sweeps.
+BARS_PER_COLOUR = 4
 
 
 class ChaseLook(Look):
     name = "chase"
     description = "Bright head sweeping the room, locked to the beat"
+    #: Output release. Short or long because the head should read as a light, not a smear.
+    release_s = 0.20
     needs_tempo = True
 
     def __init__(self, patch):
@@ -44,14 +54,16 @@ class ChaseLook(Look):
         pars = self.pars
         n = max(1, len(pars))
 
-        # One full sweep per bar. Using the continuous bar phase (rather than
-        # stepping on beat events) is what makes the motion smooth and on time.
+        bar = music.beat_index // 4
+        # One full there-and-back every BARS_PER_SWEEP bars. Using the
+        # continuous bar phase (rather than stepping on beat events) is what
+        # makes the motion smooth and on time.
         if music.tempo_locked:
-            sweep = music.bar_phase
+            sweep = ((bar % BARS_PER_SWEEP) + music.bar_phase) / BARS_PER_SWEEP
         else:
-            # No lock: free-run at a plausible walking pace so the look still
-            # does something sensible rather than freezing.
-            self._pos += dt / 2.0
+            # No lock: free-run at an unhurried pace so the look still does
+            # something sensible rather than freezing.
+            self._pos += dt / FREE_RUN_S
             sweep = self._pos % 1.0
 
         # Ping-pong rather than wrapping: a head that jumps from the last
@@ -59,15 +71,14 @@ class ChaseLook(Look):
         tri = 2.0 * sweep if sweep < 0.5 else 2.0 * (1.0 - sweep)
         head = tri * (n - 1)
 
-        # Colour steps once per bar, so the sweep keeps a single colour for its
-        # whole travel instead of smearing through the palette.
-        bar = music.beat_index // 4
-        color = palette.at(bar)
+        # Colour steps every BARS_PER_COLOUR bars, on a sweep boundary, so a
+        # sweep keeps one colour for its whole travel.
+        color = palette.at(bar // BARS_PER_COLOUR)
 
         # Hits widen the head, which makes the chase feel connected to the music
         # without breaking its timing.
         punch = max(music.hit("kick"), music.hit("snare") * 0.6)
-        width = WIDTH * (1.0 + 0.8 * punch)
+        width = WIDTH * (1.0 + 0.4 * punch)
 
         out = {}
         for i, f in enumerate(pars):
@@ -83,7 +94,7 @@ class ChaseLook(Look):
             # it fills the gap at the turnarounds rather than competing.
             fill = 1.0 - abs(tri - 0.5) * 2.0
             out[f.fid] = Emission(
-                rgb=palette.at(bar + 1),
+                rgb=palette.at(bar // BARS_PER_COLOUR + 1),
                 intensity=clamp(0.10 + 0.45 * fill),
                 uv=0.1,
             )

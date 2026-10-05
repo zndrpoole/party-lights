@@ -3,7 +3,7 @@
 The tick is deliberately boring and always the same shape:
 
     pull audio -> analyse -> choose a look -> render it -> blend ->
-    manual override -> master dimmer -> write the universe
+    manual override -> master dimmer -> write the universe -> test bench
 
 Everything that could fail is contained. A look that raises is dropped for that
 frame and the previous frame's values stand; a dead analyser degrades to the
@@ -15,8 +15,10 @@ no exception on this path is allowed to propagate to the output thread.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
+from dataclasses import replace
 
 import numpy as np
 
@@ -33,9 +35,9 @@ from .state import EngineState
 
 log = logging.getLogger(__name__)
 
-#: Seconds to crossfade between looks. Long enough to read as a transition,
-#: short enough not to feel like a dissolve.
-FADE_S = 0.9
+#: Seconds to crossfade between looks. Long enough that a change of look reads
+#: as a transition rather than a cut; 0.9 felt abrupt on the real rig.
+FADE_S = 1.8
 
 #: Minimum seconds a look runs in auto mode before another may be chosen,
 #: unless a structural event forces it. Without this the rig twitches between
@@ -46,7 +48,11 @@ FADE_S = 0.9
 #: reacts to is timestamped in audio time. Live they advance together, but they
 #: diverge whenever audio does not arrive in real time -- which made offline
 #: testing silently misleading, and would freeze the dwell if capture stalled.
-AUTO_DWELL_S = 22.0
+AUTO_DWELL_S = 32.0
+
+#: Seconds for the drop hit to fade: on a drop the whole room goes to full in
+#: the current look's colours, then settles into the new look over about 1.5 s.
+DROP_FLASH_TAU_S = 0.45
 
 #: Thresholds on *sustained* energy, not instantaneous energy.
 #:
@@ -80,6 +86,8 @@ class Engine:
         analyser: Analyser | None = None,
         tick_hz: float = 100.0,
         output_delay_ms: float = 0.0,
+        attack_ms: float = 0.0,
+        release_ms: float = 0.0,
     ):
         self.patch = patch
         self.universe = universe
@@ -103,7 +111,19 @@ class Engine:
         self._auto_since = 0.0
         self._last_read = 0
         self._music: MusicState | None = None
+        #: Onsets seen per region since start, counted across every analysis
+        #: frame. The UI flashes on a change, so it cannot miss a hit that
+        #: fell between two of its polls.
+        self.onset_counts: dict[str, int] = {}
         self._energy_env = Envelope(ENERGY_ATTACK_S, ENERGY_RELEASE_S, rate_hz=tick_hz)
+
+        #: Output smoothing. Time constants for brightness rising and falling,
+        #: applied to every look after rendering. See _smooth().
+        self.attack_s = max(0.0, attack_ms / 1000.0)
+        self.release_s = max(0.0, release_ms / 1000.0)
+        self._smoothed: dict[str, tuple[float, float]] = {}
+        #: The drop hit, 0..1, decaying. See DROP_FLASH_TAU_S.
+        self._flash = 0.0
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -206,7 +226,42 @@ class Engine:
         self._last_read = total
         states = self.analyser.feed(block)
         if states:
-            self._music = states[-1]
+            self._music = self._merge(states)
+        elif self._music is not None and (any(self._music.frame.onsets.values())
+                                          or self._music.events or self._music.beat):
+            # Nothing new this tick: keep the levels but drop the one-shot
+            # flags, or the looks would act on the same hit twice.
+            self._music = self._quiet(self._music)
+
+    def _merge(self, states: list[MusicState]) -> MusicState:
+        """Fold one tick's analysis frames into one state.
+
+        Ticks (100 Hz) and analysis hops (~94 Hz) do not line up, and after any
+        stall a tick catches up several hops at once. Levels come from the
+        newest frame; onsets, beats and events from all of them, so a kick in
+        an earlier hop is not thrown away.
+        """
+        for s in states:
+            for region, fired in s.frame.onsets.items():
+                if fired:
+                    self.onset_counts[region] = self.onset_counts.get(region, 0) + 1
+        last = states[-1]
+        if len(states) == 1:
+            return last
+        onsets = {r: any(s.frame.onsets.get(r, False) for s in states) for r in last.frame.onsets}
+        strength = {
+            r: max((s.frame.onset_strength.get(r, 0.0) for s in states if s.frame.onsets.get(r)),
+                   default=last.frame.onset_strength.get(r, 0.0))
+            for r in last.frame.onset_strength
+        }
+        events = list(dict.fromkeys(e for s in states for e in s.events))
+        frame = replace(last.frame, onsets=onsets, onset_strength=strength)
+        return replace(last, frame=frame, events=events, beat=any(s.beat for s in states))
+
+    @staticmethod
+    def _quiet(music: MusicState) -> MusicState:
+        frame = replace(music.frame, onsets={r: False for r in music.frame.onsets})
+        return replace(music, frame=frame, events=[], beat=False)
 
     def _choose_auto(self, music: MusicState) -> None:
         """Pick a look from what the music is doing.
@@ -232,12 +287,15 @@ class Engine:
 
         events = set(music.events)
         if DROP in events:
-            # Biggest moment in a track: go to the most kinetic look we can
-            # actually drive. Chase needs a tempo lock to look right.
-            pick("chase" if music.tempo_locked else "pulse")
+            # Biggest moment in a track: one full-room hit, then the heaviest
+            # look. Unison rather than chase: after a build, weight lands
+            # harder than motion.
+            self._flash = 1.0
+            pick("unison")
             return
         if BREAKDOWN in events:
-            pick("uv")
+            # The music drops away, so does the room: PARs out, UV only.
+            pick("hush")
             return
 
         # Leaving the idle look is always allowed. The dwell exists to stop
@@ -247,17 +305,23 @@ class Engine:
         # bars of music at sustained energy 0.40 and the engine stayed on
         # ambient, because a track that is already playing when we start
         # produces no drop event to break the dwell.
-        leaving_idle = self._active == "ambient" and sustained > MID_ENERGY
+        # Hush is held only while the breakdown lasts: once the energy is back
+        # it may leave at once, like ambient.
+        leaving_idle = self._active in ("ambient", "hush") and sustained > MID_ENERGY
         forced = SECTION_CHANGE in events and now - self._auto_since > AUTO_DWELL_S / 2
         if not (forced or leaving_idle) and now - self._auto_since < AUTO_DWELL_S:
             return
 
         # Otherwise choose by energy, rotating among the candidates at that
         # energy so a long track does not sit on one look forever.
+        # Each list alternates still and moving looks, so consecutive picks
+        # contrast. Chase is one of four rather than one of three, and only
+        # with a tempo lock, which it needs to look intentional.
         if sustained > BUSY_ENERGY:
-            candidates = ["chase", "pulse", "sparkle"] if music.tempo_locked else ["pulse", "sparkle"]
+            candidates = (["pulse", "mirror", "unison", "chase"] if music.tempo_locked
+                          else ["pulse", "mirror", "unison", "sparkle"])
         elif sustained > MID_ENERGY:
-            candidates = ["wash", "sparkle"]
+            candidates = ["wash", "unison", "sparkle", "mirror"]
         else:
             candidates = ["wash", "uv", "ambient"]
         candidates = [c for c in candidates if c in self.looks]
@@ -284,6 +348,69 @@ class Engine:
             if self._errors % 50 == 1:
                 log.exception("look %s failed", name)
             return {}
+
+    def _drop_hit(self, emissions: dict[str, Emission], pal, dt: float) -> dict[str, Emission]:
+        """Lift every fixture towards full while a drop hit is decaying.
+
+        Keeps each fixture's own colour, so the hit lands in the look's
+        palette rather than as a white flash; a fixture the look left
+        colourless takes the palette's first colour.
+        """
+        if self._flash < 0.01:
+            self._flash = 0.0
+            return emissions
+        flash = self._flash
+        self._flash *= math.exp(-dt / DROP_FLASH_TAU_S)
+        out = dict(emissions)
+        for f in self.patch:
+            em = emissions.get(f.fid, BLACK)
+            rgb = em.rgb if max(em.rgb) > 0.0 else pal.at(0)
+            out[f.fid] = Emission(rgb, max(em.intensity, flash), em.strobe, em.uv,
+                                  em.emitter_bias)
+        return out
+
+    def _smooth(self, emissions: dict[str, Emission], dt: float) -> dict[str, Emission]:
+        """Fast attack, slow release on brightness, per fixture.
+
+        Looks react to the music frame by frame, and on cheap LED fixtures that
+        reads as flicker: a light that snaps between dark and a brief flash
+        looks broken rather than musical. Letting brightness rise almost
+        instantly but fall over a few hundred milliseconds keeps every hit
+        punchy while turning the drop-off into a fade. It also papers over some
+        of the timing jitter wireless DMX adds.
+
+        Only intensity and UV are smoothed. Colour still changes on the frame
+        the look asks for, so a hit can land in a new colour. Manual overrides
+        are applied after this and are never smoothed: a blackout or a fixture
+        the host has grabbed must respond immediately.
+        """
+        if self.attack_s <= 0.0 and self.release_s <= 0.0:
+            return emissions
+        # The active look may ask for its own release; see Look.release_s.
+        release = getattr(self.looks.get(self._active), "release_s", None)
+        if release is None:
+            release = self.release_s
+        # The softness control stretches or shrinks both, attack included:
+        # a smooth room should not have hits that snap on.
+        scale = self.state.softness_scale()
+        attack, release = self.attack_s * scale, release * scale
+        up = 1.0 - math.exp(-dt / attack) if attack > 0.0 else 1.0
+        down = 1.0 - math.exp(-dt / release) if release > 0.0 else 1.0
+
+        out: dict[str, Emission] = {}
+        for f in self.patch:
+            em = emissions.get(f.fid, BLACK)
+            target = (em.intensity, em.uv)
+            prev = self._smoothed.get(f.fid)
+            if prev is None:
+                level = target
+            else:
+                level = tuple(
+                    p + (t - p) * (up if t > p else down) for p, t in zip(prev, target)
+                )
+            self._smoothed[f.fid] = level
+            out[f.fid] = Emission(em.rgb, level[0], em.strobe, level[1], em.emitter_bias)
+        return out
 
     def tick(self, dt: float) -> None:
         self._ticks += 1
@@ -316,11 +443,16 @@ class Engine:
             state.set_look("pulse")
             self.select("pulse")
 
+        # Hand every look the softness scale before it renders.
+        scale = state.softness_scale()
+        for look in self.looks.values():
+            look.time_scale = scale
+
         emissions = self._render_look(self._active, music, pal, dt)
 
         # Crossfade out of the previous look.
         if self._fade < 1.0 and self._previous:
-            self._fade = min(1.0, self._fade + dt / FADE_S)
+            self._fade = min(1.0, self._fade + dt / (FADE_S * scale))
             old = self._render_look(self._previous, music, pal, dt)
             blended: dict[str, Emission] = {}
             for f in self.patch:
@@ -330,6 +462,9 @@ class Engine:
             emissions = blended
             if self._fade >= 1.0:
                 self._previous = None
+
+        emissions = self._drop_hit(emissions, pal, dt)
+        emissions = self._smooth(emissions, dt)
 
         # Manual overrides sit above the looks: a fixture the host has taken is
         # not touched by whatever the music is doing.
@@ -346,6 +481,14 @@ class Engine:
             except Exception as e:
                 self._errors += 1
                 self._last_error = f"{f.fid}: {e}"
+
+        # The test bench goes last and skips the profile's conversions, so the
+        # bytes it asks for are the bytes sent. Blackout and freeze still win:
+        # they act in the universe, after this.
+        for fid, values in state.active_raw().items():
+            f = self.patch.by_id.get(fid)
+            if f is not None and f.enabled:
+                self.universe.set_block(f.address, f.profile.raw_frame(values))
 
     # -- lifecycle -------------------------------------------------------
 

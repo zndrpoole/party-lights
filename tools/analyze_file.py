@@ -10,6 +10,7 @@ the right moment in a song.
     python tools/analyze_file.py track.mp3 --timeline        # per-second detail
     python tools/analyze_file.py track.mp3 --expect-bpm 128  # verify tempo
     python tools/analyze_file.py track.wav --sensitivity 1.8
+    python tools/analyze_file.py track.mp3 --clicks heard.wav  # listen to the detector
 
 Needs ffmpeg for anything that is not a plain WAV (it is already installed).
 """
@@ -20,6 +21,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -62,6 +64,46 @@ def analyse(samples: np.ndarray, *, sensitivity: float, block: int = 4096):
     return a, states
 
 
+#: Beep for each region in the --clicks file: (frequency Hz, left gain, right gain).
+#: Kick left, snare right, hat quiet in both, so each ear answers one question.
+CLICK_VOICES = {"kick": (880.0, 1.0, 0.0), "snare": (2200.0, 0.0, 1.0), "hat": (5000.0, 0.2, 0.2)}
+CLICK_S = 0.03
+
+
+def write_clicks(path: Path, samples: np.ndarray, states, regions: list[str]) -> None:
+    """Write the track with a beep wherever a region fired, as stereo WAV.
+
+    Beeps sit at the frame time the onset was reported, i.e. when the engine
+    learns of the hit -- so a beep that trails the drum is detection latency
+    you would also see on the lights.
+    """
+    n = len(samples)
+    out = np.zeros((n, 2), dtype=np.float32)
+    out[:, 0] = out[:, 1] = samples * 0.5
+    t = np.arange(int(CLICK_S * SAMPLE_RATE)) / SAMPLE_RATE
+    shape = np.exp(-t / (CLICK_S / 4))
+    for r in regions:
+        if r not in CLICK_VOICES:
+            continue
+        freq, gl, gr = CLICK_VOICES[r]
+        beep = (0.35 * np.sin(2 * np.pi * freq * t) * shape).astype(np.float32)
+        for s in states:
+            if not s.onset(r):
+                continue
+            i = int(s.t * SAMPLE_RATE)
+            j = min(n, i + len(beep))
+            if i >= n:
+                continue
+            out[i:j, 0] += gl * beep[: j - i]
+            out[i:j, 1] += gr * beep[: j - i]
+    pcm = (np.clip(out, -1.0, 1.0) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(pcm.tobytes())
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -71,6 +113,8 @@ def main() -> int:
     ap.add_argument("--timeline", action="store_true", help="per-second detail")
     ap.add_argument("--expect-bpm", type=float,
                     help="assert the detected tempo matches this (allows 2x/0.5x)")
+    ap.add_argument("--clicks", type=Path, metavar="OUT.wav",
+                    help="write the track with a beep on each kick (left) and snare (right)")
     ap.add_argument("--log", default="WARNING")
     args = ap.parse_args()
     setup_logging(args.log)
@@ -139,6 +183,10 @@ def main() -> int:
             lk = "Y" if group[-1].tempo_locked else "-"
             hits = "  ".join(f"{sum(1 for g in group if g.onset(r)):5d}" for r in regions)
             print(f"  {sec // 60:02d}:{sec % 60:02d} {bpm:5.1f}   {lk}  {bar(e)} {hits}")
+
+    if args.clicks:
+        write_clicks(args.clicks, samples, states, regions)
+        print(f"\nWrote {args.clicks}: kick beeps left, snare beeps right, hats quiet in both")
 
     if args.expect_bpm:
         if not bpms:

@@ -52,11 +52,16 @@ class EngineState:
         self.look = look
         self.palette = palette
         self.master = 1.0
+        #: Sharp (-1) to smooth (+1); 0 is the tuning as written. See
+        #: softness_scale().
+        self.softness = 0.0
         #: Mirrors of the universe's own flags, so the UI can read one object.
         self.blackout = False
         self.freeze = False
 
         self.manual: dict[str, ManualFixture] = {}
+        #: Test-bench overrides: fid -> {role: byte}, written to the wire as-is.
+        self.raw: dict[str, dict[str, int]] = {}
 
         #: Safety rail. Strobe looks are time-limited so a forgotten cue cannot
         #: leave the room flashing. See engine/looks/strobe.py.
@@ -76,6 +81,7 @@ class EngineState:
                 "look": self.look,
                 "palette": self.palette,
                 "master": round(self.master, 3),
+                "softness": round(self.softness, 3),
                 "blackout": self.blackout,
                 "freeze": self.freeze,
                 "track_title": self.track_title,
@@ -86,6 +92,7 @@ class EngineState:
                           "strobe": round(m.strobe, 3)}
                     for fid, m in self.manual.items()
                 },
+                "raw": {fid: dict(v) for fid, v in self.raw.items()},
             }
 
     def set_mode(self, mode: str) -> None:
@@ -110,6 +117,19 @@ class EngineState:
     def set_master(self, value: float) -> None:
         with self._lock:
             self.master = clamp(value)
+
+    def set_softness(self, value: float) -> None:
+        with self._lock:
+            self.softness = clamp(value, -1.0, 1.0)
+
+    def softness_scale(self) -> float:
+        """Multiplier for every fade time: x0.25 fully sharp, x4 fully smooth.
+
+        Exponential so the middle of the slider is the written tuning and each
+        half covers the same feel of range in both directions.
+        """
+        with self._lock:
+            return 4.0 ** self.softness
 
     # -- manual overrides -------------------------------------------------
 
@@ -140,6 +160,32 @@ class EngineState:
     def active_manual(self) -> dict[str, Emission]:
         with self._lock:
             return {fid: m.emission() for fid, m in self.manual.items() if m.active}
+
+    # -- test bench -------------------------------------------------------
+
+    def set_raw(self, fid: str, values: dict[str, int]) -> dict[str, int]:
+        """Merge raw channel bytes into a fixture's bench override."""
+        with self._lock:
+            held = self.raw.setdefault(fid, {})
+            for role, value in values.items():
+                value = int(value)
+                if not 0 <= value <= 255:
+                    raise ValueError(f"{role} must be 0..255, got {value}")
+                held[role] = value
+            return dict(held)
+
+    def release_raw(self, fids=None) -> None:
+        """Hand fixtures back to the show. None releases every one."""
+        with self._lock:
+            if fids is None:
+                self.raw.clear()
+            else:
+                for fid in fids:
+                    self.raw.pop(fid, None)
+
+    def active_raw(self) -> dict[str, dict[str, int]]:
+        with self._lock:
+            return {fid: dict(v) for fid, v in self.raw.items()}
 
     # -- strobe safety ----------------------------------------------------
 

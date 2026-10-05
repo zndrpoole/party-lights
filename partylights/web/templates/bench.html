@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Test Bench</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    min-height: 38px; padding: 6px 12px; font-size: 13px; border-radius: 999px;
+    position: relative;
+  }
+  .chip.sel { background: var(--accent-2); border-color: var(--accent-2); color: #031018; }
+  .chip.held::after {
+    content: ""; position: absolute; top: 3px; right: 5px;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  }
+  .quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .quick button { min-height: 34px; padding: 4px 10px; font-size: 13px; }
+  .quick .lbl { color: var(--dim); font-size: 12px; align-self: center; margin-right: 4px; min-width: 52px; }
+
+  .ch { display: grid; grid-template-columns: 64px 40px 1fr 40px 64px; gap: 8px;
+        align-items: center; margin-top: 10px; }
+  .ch .name { font-size: 13px; text-transform: capitalize; }
+  .ch button { min-height: 36px; padding: 0; font-size: 18px; }
+  .ch input[type=number] {
+    font: 15px ui-monospace, Menlo, monospace; width: 100%; padding: 7px 6px;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; text-align: right;
+  }
+  .track { position: relative; }
+  .track input[type=range] { width: 100%; }
+  .cutoff {
+    position: absolute; top: -6px; bottom: -6px; width: 2px; background: var(--bad);
+    pointer-events: none; opacity: .8;
+  }
+  .warnline { font-size: 12px; color: var(--warn); min-height: 18px; margin-top: 6px; }
+
+  .wire table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .wire td, .wire th { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: right; }
+  .wire th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  .wire td:first-child, .wire th:first-child { text-align: left; }
+  .wire td { font-family: ui-monospace, Menlo, monospace; }
+  .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px;
+            vertical-align: -2px; border: 1px solid var(--line); margin-right: 6px; }
+
+  .release { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .release .danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  @media (max-width: 520px) {
+    .ch { grid-template-columns: 54px 36px 1fr 36px 56px; gap: 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Test bench</h1>
+  <span class="pill"><i class="dot" id="d-held"></i> Held <b id="s-held">0</b></span>
+  <span class="spacer"></span>
+  <a href="/viz">Stage view</a>
+  <a href="/">Full control &rarr;</a>
+</header>
+
+<div class="panel">
+  <h2>Fixtures</h2>
+  <div class="chips" id="chips"></div>
+  <div class="quick">
+    <span class="lbl">Select</span>
+    <button data-sel="pars">All PARs</button>
+    <button data-sel="accent">Accent</button>
+    <button data-sel="all">Everything</button>
+    <button data-sel="none">None</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Channels <span style="text-transform:none;letter-spacing:0;font-weight:400" id="s-target"></span></h2>
+  <div id="channels"></div>
+  <div class="warnline" id="warn"></div>
+  <div class="quick" id="q-dimmer"><span class="lbl">Dimmer</span></div>
+  <div class="quick" id="q-colour"><span class="lbl">Colour</span></div>
+  <div class="release">
+    <button id="b-release">Release selected</button>
+    <button id="b-release-all" class="danger">Release all</button>
+  </div>
+</div>
+
+<div class="panel wire">
+  <h2>On the wire now</h2>
+  <div id="wire"><div class="note" style="margin:0">Select a fixture.</div></div>
+</div>
+
+<div class="note">
+  Values here go to the fixture byte-for-byte: no gamma, no colour conversion,
+  no master, and not the PARs' minimum dimmer, so you can see exactly where a
+  fixture stops holding its colour. The red mark on the dimmer is where the show
+  cuts to black. Held fixtures ignore the music until released; blackout still
+  overrides them. Strobe and the mode channels are not offered here.
+</div>
+
+</div>
+<script src="/static/bench.js"></script>
+</body>
+</html>

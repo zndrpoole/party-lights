@@ -5,6 +5,8 @@ can run the rig from a phone while actually hosting. Three surfaces:
 
   /         full control: faders, colour, looks, palette, per-fixture override
   /live     big-button cue page with keyboard shortcuts, for fast hands
+  /viz      draggable stage plan showing what each fixture is doing
+  /bench    test bench: raw channel values straight to chosen fixtures
   /api/*    JSON, including /api/cue/<name> which is what a Stream Deck hits
 
 Everything mutating is a POST. Nothing here touches DMX directly: requests
@@ -16,18 +18,58 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+from pathlib import Path
 
+import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
+from flask.json.provider import DefaultJSONProvider
 
+from ..config import CONFIG_DIR
 from ..engine import palette as palettes
+from ..engine.cues import PRESETS
 from ..engine.looks import LOOKS
+from ..fixtures.profile import FixtureProfile
 
 log = logging.getLogger(__name__)
 
 
-def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=None) -> Flask:
+def _numpy_default(o):
+    """Turn numpy scalars and arrays into builtins for JSON.
+
+    The audio analysis hands back numpy types, which json cannot encode. They
+    only appear once music is playing, so a miss here passes every silent test
+    and then takes the UI down mid-party.
+    """
+    if isinstance(o, np.generic):
+        return o.item()
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
+class _JSONProvider(DefaultJSONProvider):
+    @staticmethod
+    def default(o):
+        try:
+            return _numpy_default(o)
+        except TypeError:
+            return DefaultJSONProvider.default(o)
+
+
+#: Where /viz keeps the fixture arrangement. Local, like settings.local.yaml:
+#: it describes one room, not the project.
+DEFAULT_LAYOUT = CONFIG_DIR / "layout.local.json"
+#: Live tuning set from the UI (the softness slider), kept across restarts.
+DEFAULT_TUNING = CONFIG_DIR / "tuning.local.json"
+
+
+def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=None,
+               layout_path: str | Path = DEFAULT_LAYOUT,
+               tuning_path: str | Path = DEFAULT_TUNING) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
+    app.json = _JSONProvider(app)
     app.config["JSON_SORT_KEYS"] = False
 
     # -- helpers ---------------------------------------------------------
@@ -46,6 +88,11 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
                     "emitters": f.profile.emitters,
                     "has_uv": f.profile.has_uv,
                     "has_strobe": f.profile.has_strobe,
+                    "min_dimmer": f.profile.min_dimmer,
+                    "channel_map": [
+                        {"channel": f.address + c.offset, "role": c.role, "note": c.note}
+                        for c in sorted(f.profile.channels, key=lambda c: c.offset)
+                    ],
                 }
                 for f in patch.ordered()
             ],
@@ -63,29 +110,38 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
                 for p in palettes.PALETTES
             ],
             "cues": cues.available(),
+            "presets": [
+                {"name": name, "look": look, "palette": pal, "description": desc}
+                for name, (look, pal, desc) in PRESETS.items()
+            ],
         }
 
     def music_payload() -> dict:
+        # Every value is cast to a builtin. The analysis is numpy, and numpy's
+        # bool_ / int64 are not JSON serialisable -- but only once audio is
+        # actually flowing, since the silent defaults are plain Python values.
+        # Without the casts the UI works in testing and dies when the music starts.
         m = engine.music
         if m is None:
             return {"available": False}
         return {
             "available": True,
-            "t": round(m.t, 2),
-            "energy": round(m.energy, 3),
-            "sustained_energy": round(engine.sustained_energy, 3),
-            "silent": m.silent,
-            "loudness_db": round(m.frame.loudness_db, 1),
-            "bpm": round(m.bpm, 1),
-            "beat_phase": round(m.beat_phase, 3),
-            "bar_phase": round(m.bar_phase, 3),
-            "beat_index": m.beat_index,
-            "tempo_locked": m.tempo_locked,
-            "tempo_confidence": round(m.tempo_confidence, 2),
-            "centroid": round(m.frame.centroid, 0),
-            "bands": {k: round(v, 3) for k, v in m.frame.bands_smooth.items()},
-            "flux": {k: round(v, 3) for k, v in m.frame.flux.items()},
-            "onsets": dict(m.frame.onsets),
+            "t": round(float(m.t), 2),
+            "energy": round(float(m.energy), 3),
+            "sustained_energy": round(float(engine.sustained_energy), 3),
+            "silent": bool(m.silent),
+            "loudness_db": round(float(m.frame.loudness_db), 1),
+            "bpm": round(float(m.bpm), 1),
+            "beat_phase": round(float(m.beat_phase), 3),
+            "bar_phase": round(float(m.bar_phase), 3),
+            "beat_index": int(m.beat_index),
+            "tempo_locked": bool(m.tempo_locked),
+            "tempo_confidence": round(float(m.tempo_confidence), 2),
+            "centroid": round(float(m.frame.centroid), 0),
+            "bands": {k: round(float(v), 3) for k, v in m.frame.bands_smooth.items()},
+            "flux": {k: round(float(v), 3) for k, v in m.frame.flux.items()},
+            "onsets": {k: bool(v) for k, v in m.frame.onsets.items()},
+            "onset_counts": {k: int(v) for k, v in engine.onset_counts.items()},
             "novelty": round(m.novelty, 3),
             "events": list(m.events),
         }
@@ -102,6 +158,49 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             "server_time": round(time.time(), 2),
         }
 
+    def wire_payload() -> dict:
+        """The frame most recently handed to the driver, decoded per fixture.
+
+        Built from the transmitted bytes, never from engine state, so the
+        visualiser shows exactly what the receivers get: blackout, freeze and
+        manual overrides included.
+        """
+        frame_no, frame = universe.sent_frame()
+        return {
+            "frame": frame_no,
+            "fixtures": {
+                f.fid: f.profile.decode(frame[f.address - 1 : f.last_channel])
+                for f in patch.ordered()
+            },
+        }
+
+    layout_file = Path(layout_path)
+    tuning_file = Path(tuning_path)
+
+    def write_json(path: Path, data: dict) -> None:
+        # Write then rename, so a crash mid-save cannot leave half a file.
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(tmp, path)
+
+    # Restore the last softness, so a restart does not undo the night's tuning.
+    try:
+        saved = json.loads(tuning_file.read_text())
+        state.set_softness(float(saved.get("softness", 0.0)))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError, AttributeError):
+        log.warning("ignoring unreadable tuning file %s", tuning_file)
+
+    def read_layout() -> dict:
+        try:
+            return json.loads(layout_file.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            log.warning("ignoring unreadable layout file %s", layout_file)
+            return {}
+
     # -- pages -----------------------------------------------------------
 
     @app.route("/")
@@ -111,6 +210,14 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
     @app.route("/live")
     def live():
         return render_template("live.html")
+
+    @app.route("/viz")
+    def viz():
+        return render_template("viz.html")
+
+    @app.route("/bench")
+    def bench():
+        return render_template("bench.html")
 
     # -- read ------------------------------------------------------------
 
@@ -143,11 +250,65 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         """
         def generate():
             while True:
-                yield f"data: {json.dumps(state_payload())}\n\n"
+                yield f"data: {json.dumps(state_payload(), default=_numpy_default)}\n\n"
                 time.sleep(0.05)
         return Response(generate(), mimetype="text/event-stream",
                         headers={"Cache-Control": "no-cache",
                                  "X-Accel-Buffering": "no"})
+
+    @app.route("/api/wire")
+    def api_wire():
+        """Server-sent events of the transmitted frame, for /viz.
+
+        Paced at the DMX refresh rate so every frame the fixtures get can show.
+        """
+        period = 1.0 / universe.refresh_hz
+
+        def generate():
+            last = None
+            while True:
+                payload = wire_payload()
+                if payload["frame"] != last:
+                    last = payload["frame"]
+                    yield f"data: {json.dumps(payload)}\n\n"
+                time.sleep(period)
+        return Response(generate(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Accel-Buffering": "no"})
+
+    @app.route("/api/layout", methods=["GET"])
+    def api_layout():
+        return jsonify(read_layout())
+
+    @app.route("/api/layout", methods=["POST"])
+    def api_layout_save():
+        """Save where fixtures sit on the /viz stage, as 0..1 fractions."""
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "expected {fixture_id: {x, y}}"}), 400
+        layout = {}
+        for fid, pos in data.items():
+            if fid not in patch.by_id:
+                continue
+            try:
+                x, y = float(pos["x"]), float(pos["y"])
+            except (TypeError, KeyError, ValueError):
+                return jsonify({"error": f"bad position for {fid}"}), 400
+            layout[fid] = {"x": round(min(max(x, 0.0), 1.0), 4),
+                           "y": round(min(max(y, 0.0), 1.0), 4)}
+        write_json(layout_file, layout)
+        return jsonify(layout)
+
+    @app.route("/api/softness", methods=["POST"])
+    def api_softness():
+        """Sharp (-1) to smooth (+1). Saved, so it survives a restart."""
+        data = request.get_json(silent=True) or {}
+        try:
+            state.set_softness(float(data["softness"]))
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "softness must be a number -1..1"}), 400
+        write_json(tuning_file, {"softness": state.softness})
+        return jsonify({"softness": state.softness, "scale": round(state.softness_scale(), 3)})
 
     # -- write -----------------------------------------------------------
 
@@ -230,6 +391,41 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
                 state.update_manual(fid, **fields)
                 applied.append(fid)
         return jsonify({"applied": applied})
+
+    @app.route("/api/bench", methods=["POST"])
+    def api_bench():
+        """Hold fixtures at raw channel values, bypassing looks and profile.
+
+        Body: {"ids": [...]} or {"group": "pars"}, plus {"values": {role: 0..255}}
+        for any of dimmer/red/green/blue/white/amber/uv.
+        """
+        data = request.get_json(silent=True) or {}
+        ids = data.get("ids")
+        if data.get("group"):
+            ids = [f.fid for f in patch.group(data["group"])]
+        if not ids:
+            return jsonify({"error": "pass ids[] or group"}), 400
+        values = data.get("values") or {}
+        if not isinstance(values, dict):
+            return jsonify({"error": "values must be {role: 0..255}"}), 400
+        bad = [r for r in values if r not in FixtureProfile.BENCH_ROLES]
+        if bad:
+            return jsonify({"error": f"not settable on the bench: {bad}"}), 400
+        held = {}
+        try:
+            for fid in ids:
+                if fid in patch.by_id:
+                    held[fid] = state.set_raw(fid, values)
+        except (TypeError, ValueError) as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"held": held})
+
+    @app.route("/api/bench/release", methods=["POST"])
+    def api_bench_release():
+        """Hand fixtures back to the show. No ids releases every one."""
+        data = request.get_json(silent=True) or {}
+        state.release_raw(data.get("ids"))
+        return jsonify({"held": state.active_raw()})
 
     @app.route("/api/cue/<path:name>", methods=["POST", "GET"])
     def api_cue(name):

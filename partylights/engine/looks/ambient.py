@@ -25,6 +25,8 @@ DRIFT_S = 75.0
 class AmbientLook(Look):
     name = "ambient"
     description = "Slow breathing wash — for lulls, speeches and silence"
+    #: Output release. Short or long because it is the idle look.
+    release_s = 0.60
 
     def __init__(self, patch):
         super().__init__(patch)
@@ -44,7 +46,9 @@ class AmbientLook(Look):
             # a slow wave travelling through the room.
             phase = self._t / BREATH_S + i / n * 0.6
             breath = 0.5 + 0.5 * math.sin(2.0 * math.pi * phase)
-            level = 0.18 + 0.30 * breath
+            # The trough stays above the PARs' min_dimmer (about 0.28), so a
+            # breath dims the colour rather than cutting it to black.
+            level = 0.30 + 0.30 * breath
             color = palette.sample(self._t / DRIFT_S + i / n * 0.25)
             out[f.fid] = Emission(rgb=color, intensity=level)
 

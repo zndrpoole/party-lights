@@ -12,6 +12,10 @@ model: ZQ01104
 label: "U'King 36-LED RGB PAR"
 footprint: 7
 gamma: 2.2
+# Measured on the rig: orange (255, 51, 0) holds its hue at dimmer 15 and turns
+# red by 8; at 4 most units go dark but one (address 57) stayed dim red, even at
+# 0. Below this the fixture is sent fully dark, colour channels included.
+min_dimmer: 15
 
 notes: >
   Offset 5 is the mode channel and it is the single most important value in this

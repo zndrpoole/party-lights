@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Stage View</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  /* The stage is a plan of the room. Positions are stored as fractions of it,
+     so an arrangement made on the laptop holds on a phone. */
+  .stage {
+    position: relative; margin-top: 16px; width: 100%;
+    aspect-ratio: 16 / 10; min-height: 320px;
+    background:
+      radial-gradient(ellipse at 50% 120%, #161925 0%, #07080b 70%),
+      #07080b;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: hidden; touch-action: none; user-select: none;
+  }
+  .stage::after {          /* faint grid, to line things up by eye */
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 5% 8%; opacity: .25;
+  }
+  @media (max-width: 640px) and (orientation: portrait) {
+    .stage { aspect-ratio: 3 / 4; }
+  }
+
+  .fx {
+    position: absolute; transform: translate(-50%, -50%);
+    display: grid; justify-items: center; gap: 4px;
+    cursor: grab; z-index: 1; touch-action: none;
+  }
+  .fx.dragging { cursor: grabbing; z-index: 3; }
+  .stage.locked .fx { cursor: pointer; }
+  .fx.sel .lens { outline: 2px solid var(--accent-2); outline-offset: 4px; }
+
+  .lens {
+    --size: 54px;
+    width: var(--size); height: var(--size); border-radius: 50%;
+    background: #000; border: 2px solid #333844;
+    box-shadow: 0 0 0 0 transparent;
+    position: relative;
+  }
+  .fx.big .lens { --size: 70px; border-radius: 22%; }
+  .lens.strobing { animation: strobe var(--period, 100ms) steps(1, end) infinite; }
+  @keyframes strobe { 50% { opacity: .04; } }
+
+  .tag {
+    font-size: 12px; font-weight: 600; white-space: nowrap;
+    background: rgba(11, 12, 16, .8); border: 1px solid var(--line);
+    border-radius: 6px; padding: 1px 7px; text-align: center; line-height: 1.35;
+  }
+  .tag small {
+    display: block; font-weight: 400; color: var(--dim);
+    font: 10px ui-monospace, Menlo, monospace;
+  }
+  .badges { position: absolute; top: -8px; right: -12px; display: flex; gap: 3px; }
+  .badge {
+    font: 700 9px ui-monospace, Menlo, monospace; padding: 1px 4px;
+    border-radius: 4px; background: var(--warn); color: #000;
+  }
+  .badge.uv { background: #8a4dff; color: #fff; }
+
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .toolbar button { min-height: 38px; padding: 6px 12px; font-size: 13px; }
+  .toolbar button.on { background: var(--accent); border-color: var(--accent); color: #140a02; }
+
+  .detail table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .detail td, .detail th {
+    text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line);
+  }
+  .detail th { color: var(--dim); font-weight: 500; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .06em; }
+  .detail .num { font-family: ui-monospace, Menlo, monospace; text-align: right; }
+  .detail .barcell { width: 40%; }
+  .detail .barcell i {
+    display: block; height: 6px; border-radius: 3px; background: var(--accent-2);
+  }
+  .swatch {
+    display: inline-block; width: 14px; height: 14px; border-radius: 4px;
+    vertical-align: -2px; border: 1px solid var(--line); margin-right: 6px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Stage</h1>
+  <span class="pill"><i class="dot" id="d-wire"></i> Wire <b id="s-fps">—</b></span>
+  <span class="pill">Frame <b id="s-frame" class="mono">—</b></span>
+  <span class="spacer"></span>
+  <a href="/live">Live</a>
+  <a href="/bench">Test bench</a>
+  <a href="/">Full control &rarr;</a>
+</header>
+
+<div class="toolbar">
+  <button id="b-lock">Lock layout</button>
+  <button id="b-names">Show addresses</button>
+  <button id="b-reset">Reset layout</button>
+  <span class="note" id="s-saved" style="margin:0;align-self:center"></span>
+</div>
+
+<div class="stage" id="stage"></div>
+
+<div class="panel detail" id="detail">
+  <h2>Fixture</h2>
+  <div class="note" style="margin:0">Tap a fixture to see its channels.</div>
+</div>
+
+<div class="note">
+  Every light here is drawn from the exact DMX frame handed to the transmitter,
+  decoded through the same fixture profile that encoded it, so blackout, freeze
+  and manual overrides show exactly as the rig gets them. Drag to arrange; the
+  layout is saved on this machine and shared by every device that opens this page.
+  Strobe flash speed is approximate: the fixture times it, not the DMX signal.
+</div>
+
+</div>
+<script src="/static/viz.js"></script>
+</body>
+</html>

@@ -52,6 +52,19 @@ async function loadRig() {
     looks.appendChild(b);
   });
 
+  const presets = $("presets");
+  presets.innerHTML = "";
+  (rig.presets || []).forEach((p) => {
+    const b = document.createElement("button");
+    b.textContent = p.name;
+    b.title = p.description;
+    b.dataset.preset = p.name;
+    b.dataset.presetLook = p.look;
+    b.dataset.presetPalette = p.palette;
+    b.onclick = () => fetch(`/api/cue/preset/${p.name}`, { method: "POST" });
+    presets.appendChild(b);
+  });
+
   const pals = $("palettes");
   pals.innerHTML = "";
   rig.palettes.forEach((p) => {
@@ -136,6 +149,7 @@ async function loadRig() {
 
 /* -- apply live state ------------------------------------------------ */
 
+let lastHits = {};
 let lastBeat = -1;
 
 function apply(s) {
@@ -159,11 +173,16 @@ function apply(s) {
     $("r-master").value = pct(st.master);
   }
   $("s-master").textContent = pct(st.master) + "%";
+  if (dragging !== "r-soft") $("r-soft").value = Math.round(st.softness * 100);
+  $("s-soft").textContent = softLabel(st.softness);
 
   document.querySelectorAll("[data-look]").forEach((b) =>
     b.classList.toggle("on", b.dataset.look === s.engine.look));
   document.querySelectorAll("[data-palette]").forEach((b) =>
     b.classList.toggle("on", b.dataset.palette === st.palette));
+  document.querySelectorAll("[data-preset]").forEach((b) =>
+    b.classList.toggle("on", b.dataset.presetLook === s.engine.look &&
+                             b.dataset.presetPalette === st.palette));
 
   const trackBits = [];
   if (juke.track && juke.track.title) {
@@ -185,9 +204,15 @@ function apply(s) {
       b.classList.add("hit");
       setTimeout(() => b.classList.remove("hit"), 90);
     }
+    // Counts, not the per-frame flag: a hit lasts one ~11 ms analysis frame
+    // and this stream runs at 20 Hz, so the flag alone misses most of them.
+    const counts = m.onset_counts || {};
     ["kick", "snare", "hat"].forEach((r) => {
       const el = $(`h-${r}`);
-      if (m.onsets && m.onsets[r]) {
+      const n = counts[r] || 0;
+      const fired = n !== (lastHits[r] ?? n);
+      lastHits[r] = n;
+      if (fired) {
         el.classList.add("on");
         setTimeout(() => el.classList.remove("on"), 90);
       }
@@ -248,6 +273,21 @@ document.querySelector("[data-group-all]").onclick = () =>
 const rm = $("r-master");
 rm.oninput = () => { dragging = "r-master"; post("/api/master", { master: rm.value / 100 }); };
 rm.onchange = () => (dragging = null);
+
+/* Feel: one control over every fade time, x0.25 (sharp) to x4 (smooth). */
+function softLabel(v) {
+  if (Math.abs(v) < 0.025) return "as tuned";
+  const x = Math.pow(4, v);
+  return `${v < 0 ? "sharper" : "smoother"} \u00d7${x.toFixed(2)} fades`;
+}
+const rs = $("r-soft");
+rs.oninput = () => {
+  dragging = "r-soft";
+  $("s-soft").textContent = softLabel(rs.value / 100);
+  post("/api/softness", { softness: rs.value / 100 });
+};
+rs.onchange = () => (dragging = null);
+$("b-soft-reset").onclick = () => post("/api/softness", { softness: 0 });
 
 loadRig().then(() => {
   const es = new EventSource("/api/stream");

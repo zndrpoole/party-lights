@@ -191,32 +191,89 @@ def test_tempo_is_detected_within_two_percent(bpm):
     assert abs(got - bpm) / bpm < 0.02, f"expected {bpm}, got {got:.1f}"
 
 
-def test_tempo_salience_uses_kick_and_snare_not_kick_alone():
-    """Regression: kick-only salience halves the tempo on a backbeat groove.
+def test_tempo_survives_a_kick_pattern_on_one_and_three():
+    """Regression: kick-only salience used to halve the tempo on a backbeat.
 
     With kicks on 1 and 3 only, the kick signal genuinely repeats every two
-    beats, so the tracker correctly reports half tempo -- correct about the kick
-    pattern, wrong about the beat. Adding snare fixes it because kick and snare
-    together mark every beat.
+    beats, and single-lag autocorrelation reported half tempo. Scoring periods
+    at 1, 2 and 4 beats fixes it even from the kick alone; the analyser also
+    adds snare and broadband flux, which mark every beat.
     """
     assert "kick" in TEMPO_SALIENCE_WEIGHTS and "snare" in TEMPO_SALIENCE_WEIGHTS
-    assert TEMPO_SALIENCE_WEIGHTS["snare"] > 0
 
     signal, _ = render(140.0, bars=16)
     fe = FeatureExtractor(sample_rate=SR)
     kick_only = TempoTracker(rate_hz=fe.rate_hz)
-    combined = TempoTracker(rate_hz=fe.rate_hz)
     for i in range(0, len(signal), 4096):
         for f in fe.feed(signal[i : i + 4096]):
-            onset = f.onsets.get("kick", False)
-            kick_only.update(f.flux.get("kick", 0.0), f.t, onset=onset)
-            combined.update(
-                sum(f.flux.get(k, 0.0) * w for k, w in TEMPO_SALIENCE_WEIGHTS.items()),
-                f.t, onset=onset,
-            )
-    assert abs(combined.bpm - 140.0) / 140.0 < 0.02
-    # And confirm the failure mode is real, so this test is testing something.
-    assert abs(kick_only.bpm - 70.0) / 70.0 < 0.05
+            kick_only.update(f.flux.get("kick", 0.0), f.t)
+    assert abs(kick_only.bpm - 140.0) / 140.0 < 0.02
+
+    a = Analyser(sample_rate=SR)
+    for i in range(0, len(signal), 4096):
+        a.feed(signal[i : i + 4096])
+    assert abs(a.tempo.bpm - 140.0) / 140.0 < 0.02
+
+
+def _pulses(bpm, seconds, rate):
+    """A clean salience pulse train, one spike per beat."""
+    n = int(seconds * rate)
+    env = np.zeros(n)
+    env[(np.arange(0, seconds, 60.0 / bpm) * rate).astype(int)] = 1.0
+    return env
+
+
+def test_tempo_does_not_jump_on_one_ambiguous_window():
+    """Regression: one estimate >12% away used to switch tempo at once.
+
+    On a real 160 BPM track that flipped the rig between 106, 114 and 160 BPM
+    every few seconds, resetting the beat clock each time.
+    """
+    rate = 93.75
+    tr = TempoTracker(rate_hz=rate)
+    t = 0.0
+    def play(bpm, seconds):
+        nonlocal t
+        for v in _pulses(bpm, seconds, rate):
+            tr.update(v, t)
+            t += 1.0 / rate
+    play(128.0, 12.0)
+    assert abs(tr.bpm - 128.0) < 2.0
+    play(96.0, 1.5)              # a brief, different pattern
+    assert abs(tr.bpm - 128.0) < 2.0
+    play(128.0, 4.0)
+    play(96.0, 10.0)             # a real change of tempo does get through
+    assert abs(tr.bpm - 96.0) < 2.0
+
+
+def test_noise_does_not_lock_the_tempo():
+    rng = np.random.default_rng(0)
+    noise = rng.normal(0.0, 0.1, SR * 20).astype(np.float32)
+    a = Analyser(sample_rate=SR)
+    states = []
+    for i in range(0, len(noise), 4096):
+        states.extend(a.feed(noise[i : i + 4096]))
+    settled = [s for s in states if s.t > 4.0]
+    assert sum(s.tempo_locked for s in settled) / len(settled) < 0.05
+
+
+def test_weak_kicks_between_beats_are_dropped_once_locked():
+    """Regression: bass-line notes counted as kicks and flashed off the beat."""
+    from partylights.audio.features import FeatureFrame
+    a = Analyser(sample_rate=SR)
+    a.tempo.bpm, a.tempo.confidence, a.tempo._agree = 120.0, 0.5, 5
+    def frame(strength):
+        return FeatureFrame(t=1.0, rms=0.1, loudness_db=-20, energy=0.5, silent=False,
+                            onsets={"kick": True, "snare": True, "hat": True},
+                            onset_strength={"kick": strength, "snare": strength, "hat": strength})
+    a.tempo.phase = 0.5          # half way between beats
+    f = frame(0.3); a._gate_to_beat(f)
+    assert not f.onsets["kick"] and not f.onsets["snare"] and f.onsets["hat"]
+    f = frame(0.9); a._gate_to_beat(f)  # strong: a real syncopated kick
+    assert f.onsets["kick"]
+    a.tempo.phase = 0.05         # on the beat
+    f = frame(0.3); a._gate_to_beat(f)
+    assert f.onsets["kick"] and f.onsets["snare"]
 
 
 def test_beat_phase_stays_locked_through_the_track(track_128):

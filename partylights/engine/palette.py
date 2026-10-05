@@ -61,6 +61,16 @@ PALETTES: tuple[Palette, ...] = (
         "Orange, violet and green",
     ),
     Palette(
+        "halloween-deep",
+        # Order matters to the swell look, which pairs colour i with colour
+        # i + 2: every pairing is then one orange with one purple.
+        (hsv(0.075, 1.0, 1.0),   # pumpkin orange
+         hsv(0.035, 1.0, 1.0),   # ember
+         hsv(0.77, 1.0, 1.0),    # deep purple
+         hsv(0.81, 1.0, 1.0)),   # violet
+        "Orange, ember, purple, violet — Halloween without the green",
+    ),
+    Palette(
         "warm",
         (hsv(0.02, 0.95, 1.0),   # red
          hsv(0.08, 1.0, 1.0),    # amber
