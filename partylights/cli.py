@@ -126,7 +126,14 @@ def cmd_run(args) -> int:
     # Audio capture is optional: the UI, the looks and manual control all work
     # without it, which is what you want while setting up the rig.
     capture = None
-    if not args.no_audio:
+    if args.audio_file:
+        from .audio.capture import FilePlayback
+        capture = FilePlayback(
+            args.audio_file,
+            sample_rate=int(settings.get("audio.sample_rate", 48000)),
+            block_size=int(settings.get("audio.block_size", 512)),
+        )
+    elif not args.no_audio:
         from .audio.capture import AudioCapture
         capture = AudioCapture(
             device=settings.get("audio.device", "BlackHole"),
@@ -235,6 +242,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("run", help="run the rig")
     p.add_argument("--driver", help="override dmx.driver (serial, ftdi, null)")
     p.add_argument("--no-audio", action="store_true", help="skip audio capture")
+    p.add_argument("--audio-file", metavar="PATH",
+                   help="analyse this file instead of the loopback, silently and "
+                        "looping -- for designing looks in /viz without speakers")
     p.add_argument("--no-jukebox", action="store_true", help="skip jukebox polling")
     p.set_defaults(fn=cmd_run)
 

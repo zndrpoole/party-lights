@@ -26,6 +26,7 @@ const COLOUR_PRESETS = [
 let rig = null;
 let selected = new Set();
 let held = {};            // fid -> {role: byte}, from /api/state
+let floor = 0;            // the live dimmer floor, from /api/state
 let wire = {};            // fid -> decoded fixture, from /api/wire
 const values = { dimmer: 255, red: 255, green: 51, blue: 0, white: 0, amber: 0, uv: 0 };
 const rows = {};          // role -> {row, range, num}
@@ -92,8 +93,9 @@ function availableRoles() {
 }
 
 function cutoff() {
-  // The highest min_dimmer among the selection: where the show goes black.
-  let c = 0;
+  // Where the show goes black: the live dimmer floor, or a profile's own
+  // min_dimmer if one in the selection is higher.
+  let c = floor;
   selected.forEach((fid) => { c = Math.max(c, fixture(fid).min_dimmer || 0); });
   return c;
 }
@@ -233,6 +235,10 @@ async function pollHeld() {
   try {
     const s = await fetch("/api/state").then((r) => r.json());
     held = s.state.raw || {};
+    if (s.state.dimmer_floor !== floor) {
+      floor = s.state.dimmer_floor || 0;
+      buildChannels();
+    }
   } catch { return; }
   const n = Object.keys(held).length;
   $("s-held").textContent = n;

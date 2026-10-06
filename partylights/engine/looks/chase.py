@@ -22,10 +22,8 @@ from .base import Look
 #: Width of the travelling head, in fixtures. Below about 1.5 the movement
 #: strobes rather than sweeps.
 WIDTH = 1.9
-#: Residual brightness on fixtures the head has left, so the run never reads
-#: as dark gaps. Must stay above the PARs' min_dimmer (about 0.28 here) or the
-#: tail is either a wrong hue or cut to black.
-TAIL = 0.30
+#: Residual brightness on fixtures the head has left.
+TAIL = 0.07
 #: Bars for one there-and-back. Was 1, which read as frantic at party tempos.
 BARS_PER_SWEEP = 2
 #: Seconds per there-and-back when there is no tempo lock.

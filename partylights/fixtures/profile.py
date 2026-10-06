@@ -78,7 +78,8 @@ class FixtureProfile:
     label: str = ""
     gamma: float = 2.2
     #: Lowest dimmer byte at which the fixture still shows the colour it was
-    #: sent. Anything below is sent as fully dark instead. 0 disables.
+    #: sent. Anything below is sent as fully dark instead. 0 disables. The
+    #: live floor passed to render() can raise it but never lower it.
     min_dimmer: int = 0
     notes: str = ""
     source: str = ""
@@ -121,8 +122,12 @@ class FixtureProfile:
 
     # -- the one interesting method ---------------------------------------
 
-    def render(self, em: Emission) -> bytearray:
-        """Turn an Emission into this fixture's channel values."""
+    def render(self, em: Emission, floor: int = 0) -> bytearray:
+        """Turn an Emission into this fixture's channel values.
+
+        `floor` is the live dimmer floor from the UI, in DMX bytes; the higher
+        of it and the profile's own min_dimmer applies.
+        """
         out = bytearray(self.footprint)
 
         # Assert constants first so a later role can never leave one unset.
@@ -160,7 +165,7 @@ class FixtureProfile:
         # emitter drops out at a different level, so orange turns red. Below
         # the fixture's floor, go fully dark instead -- and zero the emitters
         # too, since some units leak colour even with the dimmer at 0.
-        if self.has("dimmer") and out[self._by_role["dimmer"]] < self.min_dimmer:
+        if self.has("dimmer") and out[self._by_role["dimmer"]] < max(self.min_dimmer, floor):
             for role in ("dimmer", *COLOUR_ROLES, "uv"):
                 if self.has(role):
                     out[self._by_role[role]] = 0

@@ -237,3 +237,96 @@ class AudioCapture:
             "peak": round(self.peak(), 4),
             "samples": self.ring.total_written,
         }
+
+
+class FilePlayback:
+    """Feeds an audio file into the ring buffer in real time, silently.
+
+    A stand-in for AudioCapture (same ring, same stats), for designing looks
+    at a laptop: the stage view reacts to a known track exactly as it would to
+    the room, with no loopback routing and nothing coming out of the speakers.
+    Loops at the end. Decodes with ffmpeg, so any format it reads works.
+    """
+
+    def __init__(self, path: str, *, sample_rate: int = 48000, block_size: int = 512,
+                 buffer_seconds: float = 12.0):
+        self.path = path
+        self.sample_rate = sample_rate
+        self.block_size = block_size
+        self.channels = 1
+        self.ring = RingBuffer(int(sample_rate * buffer_seconds))
+        self.dropouts = 0
+        self._samples: np.ndarray | None = None
+        self._pos = 0
+        self._peak = 0.0
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    @property
+    def device_name(self) -> str:
+        return f"file: {self.path}"
+
+    def _decode(self) -> np.ndarray:
+        import shutil
+        import subprocess
+
+        if shutil.which("ffmpeg") is None:
+            raise RuntimeError("ffmpeg not found — brew install ffmpeg")
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(self.path),
+             "-f", "f32le", "-ac", "1", "-ar", str(self.sample_rate), "-"],
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {proc.stderr.decode(errors='replace')}")
+        return np.frombuffer(proc.stdout, dtype=np.float32).copy()
+
+    def _run(self) -> None:
+        import time
+
+        period = self.block_size / self.sample_rate
+        due = time.monotonic()
+        samples = self._samples
+        while not self._stop.is_set():
+            end = self._pos + self.block_size
+            block = samples[self._pos:end]
+            self._pos = end if end < len(samples) else 0
+            self.ring.push(block)
+            self._peak = max(self._peak * 0.92, float(np.abs(block).max()) if block.size else 0.0)
+            # Pace by the clock rather than sleeping a fixed period, so the
+            # file plays at true speed however long each push takes.
+            due += period
+            slack = due - time.monotonic()
+            if slack > 0:
+                time.sleep(slack)
+
+    def peak(self) -> float:
+        return self._peak
+
+    def start(self) -> None:
+        self._samples = self._decode()
+        if not len(self._samples):
+            raise RuntimeError(f"{self.path}: no audio")
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="FilePlayback", daemon=True)
+        self._thread.start()
+        log.info("Playing %s into the analyser (%.1f s, silent, looping)",
+                 self.path, len(self._samples) / self.sample_rate)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    def stats(self) -> dict:
+        return {
+            "device": self.device_name,
+            "sample_rate": self.sample_rate,
+            "block_size": self.block_size,
+            "channels": 1,
+            "dropouts": 0,
+            "peak": round(self.peak(), 4),
+            "samples": self.ring.total_written,
+            "position_s": round(self._pos / self.sample_rate, 1),
+        }

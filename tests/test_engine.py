@@ -168,13 +168,30 @@ def test_manual_override_is_not_smoothed(rig):
 
 def test_bench_bytes_reach_the_universe_verbatim(rig):
     """The bench exists to probe the fixture, so nothing may reshape its bytes:
-    not the look, not the master, and not min_dimmer (14 would otherwise be 0)."""
+    not the look, not the master, and not the dimmer floor (14 would otherwise be 0)."""
     patch, universe, state, engine, _ = rig
     state.set_master(0.2)
+    state.set_dimmer_floor(15)
     state.set_raw("par1", {"dimmer": 14, "red": 255, "green": 51, "blue": 0})
     engine.tick(0.01)
     f = patch.by_id["par1"]
     assert list(universe.buffer()[f.address - 1 : f.last_channel]) == [14, 255, 51, 0, 0, 0, 0]
+
+
+def test_dimmer_floor_cuts_dim_fixtures_to_black(rig):
+    """Off by default, so a dim level reaches the wire; raised, it goes dark."""
+    patch, universe, state, engine, _ = rig
+    state.set_mode("manual")
+    state.update_manual("par1", active=True, rgb=(1.0, 0.2, 0.0), intensity=0.25)
+    f = patch.by_id["par1"]
+    engine.tick(0.01)
+    dim = universe.buffer()[f.address - 1]
+    assert 0 < dim < 30
+    state.set_dimmer_floor(30)
+    engine.tick(0.01)
+    assert list(universe.buffer()[f.address - 1 : f.address + 3]) == [0, 0, 0, 0]
+    state.set_dimmer_floor(999)
+    assert state.dimmer_floor == 40
 
 
 def test_bench_release_hands_the_fixture_back(rig):
@@ -223,16 +240,6 @@ def _run_swell(look, seconds, state_at, dt=0.025):
     for k in range(int(seconds / dt)):
         frames.append(look.render(state_at(k * dt), pal, dt))
     return frames
-
-
-def test_swell_never_dips_below_the_par_cutoff(rig):
-    """Below min_dimmer the PARs are cut to black, so a dip there is a blink."""
-    patch, *_ = rig
-    cutoff = (patch.by_id["par1"].profile.min_dimmer / 255) ** (1 / 2.2)
-    look = SwellLook(patch)
-    frames = _run_swell(look, 40, lambda t: silent_state(t) if int(t) % 8 < 4 else loud_state(t))
-    lowest = min(em.intensity for fr in frames for fid, em in fr.items() if fid.startswith("par"))
-    assert lowest > cutoff + 0.03
 
 
 def test_swell_holds_colour_then_rolls_to_the_next(rig):
@@ -292,25 +299,15 @@ def kick_state(t=0.0, kick=False, **kw):
     return MusicState(frame=frame, **kw)
 
 
+def auto(engine, music, dt=0.01):
+    """One auto-mode decision, the way the tick makes it: the song-arc
+    director hears the music first."""
+    engine._direct(music, dt)
+    engine._choose_auto(music)
+
+
 def _kicks_every(period):
     return lambda t: kick_state(t, kick=(int(t / 0.025) % int(period / 0.025) == 0))
-
-
-def test_no_steady_look_parks_the_pars_below_the_cutoff(rig):
-    """Between 0 and min_dimmer a PAR is cut to black, so a look that sits there
-    blinks. Pulse is exempt: fading through it to black is its design."""
-    patch, *_ = rig
-    cutoff = (patch.by_id["par1"].profile.min_dimmer / 255) ** (1 / 2.2)
-    pal = palettes.get("halloween")
-    for name in ("ambient", "wash", "swell", "unison", "mirror", "chase",
-                 "sparkle", "uv", "hush"):
-        look = BY_NAME[name](patch)
-        state_at = _kicks_every(0.45)
-        for k in range(int(20 / 0.025)):
-            t = k * 0.025
-            for fid, em in look.render(state_at(t), pal, 0.025).items():
-                if fid.startswith("par"):
-                    assert not (0.0 < em.intensity < cutoff), (name, t, fid, em.intensity)
 
 
 def test_unison_moves_the_whole_room_together(rig):
@@ -353,22 +350,28 @@ def test_colour_follows_bars_not_kicks_when_tempo_is_locked(rig):
         assert len(colours) == 1, name
 
 
-def test_breakdown_goes_to_hush_and_energy_brings_it_back(rig):
+def test_breakdown_goes_to_hush_and_the_kick_brings_it_back(rig):
+    """Hush holds for the whole breakdown. It used to leave as soon as the
+    energy read busy, which the analyser's gain control makes happen within
+    a tick of a quiet pad -- on the test track hush lasted 10 ms."""
     patch, universe, state, engine, _ = rig
     engine._energy_env._value = 0.5
-    engine._choose_auto(kick_state(40.0, events=[BREAKDOWN]))
+    auto(engine, kick_state(40.0, events=[BREAKDOWN]))
     assert engine.active_look == "hush"
     out = engine.looks["hush"].render(kick_state(40.0), palettes.get("halloween"), 0.025)
     assert all(out[f.fid].intensity == 0.0 for f in patch.group("pars"))
     assert out["accent"].uv > 0.6
-    engine._choose_auto(kick_state(41.0))         # energy is still up: leave at once
+    auto(engine, kick_state(41.0))         # energy reads busy: still a breakdown
+    assert engine.active_look == "hush"
+    for k in range(4):                     # the kick comes back
+        auto(engine, kick_state(42.0 + 0.47 * k, kick=True))
     assert engine.active_look != "hush"
 
 
 def test_drop_hits_the_whole_room_then_settles(rig):
     patch, universe, state, engine, _ = rig
     engine._energy_env._value = 0.7
-    engine._choose_auto(kick_state(40.0, events=[DROP]))
+    auto(engine, kick_state(40.0, events=[DROP]))
     assert engine.active_look == "unison"
     pal = palettes.get("halloween")
     hit = engine._drop_hit({}, pal, 0.01)
@@ -378,16 +381,45 @@ def test_drop_hits_the_whole_room_then_settles(rig):
     assert engine._flash == 0.0
 
 
-def test_busy_auto_rotation_alternates_still_and_moving_looks(rig):
+#: Looks that hold the room in place rather than moving light across it.
+STILL_LOOKS = {"pulse", "unison", "knockout", "beams", "wash", "drift", "uv", "ambient"}
+
+
+@pytest.mark.parametrize("locked", [True, False])
+def test_busy_auto_rotation_alternates_still_and_moving_looks(rig, locked):
     patch, universe, state, engine, _ = rig
     engine._energy_env._value = 0.8
     seen = []
     t = 0.0
-    for _ in range(4):
-        t += 40.0
-        engine._choose_auto(kick_state(t, tempo_locked=True))
+    beat = 0
+    for _ in range(12):
+        # Past the 32 s dwell unlocked; locked, the 4 phrases a look holds for,
+        # crossed one phrase line at a time.
+        for _ in range(4 if locked else 1):
+            t += 40.0
+            beat += 16
+            auto(engine, kick_state(t, tempo_locked=locked, bpm=128.0, beat_index=beat))
         seen.append(engine.active_look)
-    assert seen.count("chase") <= 1 and {"unison", "mirror"} <= set(seen)
+    still = [name in STILL_LOOKS for name in seen]
+    assert all(a != b for a, b in zip(still, still[1:])), seen
+    # Rotation, not a favourite: nothing more than its fair share.
+    assert max(seen.count(n) for n in seen) <= 2
+    tempo_only = {n for n in seen if engine.looks[n].needs_tempo}
+    assert locked or not tempo_only
+
+
+def test_locked_auto_changes_look_only_on_a_phrase_boundary(rig):
+    patch, universe, state, engine, _ = rig
+    engine._energy_env._value = 0.8
+    auto(engine, kick_state(0.0, tempo_locked=True, bpm=128.0, beat_index=1))
+    first = engine.active_look
+    # Long past the time-based dwell, but three phrases in: hold.
+    for beat in range(2, 64):
+        auto(engine, kick_state(beat * 0.47, tempo_locked=True, bpm=128.0, beat_index=beat))
+        assert engine.active_look == first, beat
+    # The fourth phrase line: change, on its first beat.
+    auto(engine, kick_state(64 * 0.47, tempo_locked=True, bpm=128.0, beat_index=64))
+    assert engine.active_look != first
 
 
 # -- palettes ---------------------------------------------------------------

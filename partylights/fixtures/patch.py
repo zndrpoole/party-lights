@@ -56,11 +56,11 @@ class PatchedFixture:
     def channels(self) -> range:
         return range(self.address, self.last_channel + 1)
 
-    def render_into(self, universe, em: Emission) -> None:
+    def render_into(self, universe, em: Emission, floor: int = 0) -> None:
         """Convert an Emission for this model and write it to the universe."""
         if not self.enabled:
             return
-        universe.set_block(self.address, self.profile.render(em))
+        universe.set_block(self.address, self.profile.render(em, floor))
 
     def describe(self) -> str:
         return (f"{self.fid} ({self.profile.model}) @ {self.address}"

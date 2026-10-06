@@ -21,9 +21,8 @@ from .base import Look
 DECAY_S = 0.7
 #: How many fixtures a single hat lights.
 PER_HIT = 2
-#: The colour bed under the glints. Above the PARs' min_dimmer (about 0.28),
-#: so the room holds its colour between hats instead of dropping to black.
-FLOOR = 0.32
+#: The colour bed under the glints.
+FLOOR = 0.05
 
 
 class SparkleLook(Look):

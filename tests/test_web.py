@@ -123,3 +123,19 @@ def test_softness_is_saved_and_restored_across_restarts(patch, tmp_path):
     restarted = EngineState()
     make(restarted)
     assert restarted.softness == 0.5
+
+
+def test_dimmer_floor_is_saved_with_softness(patch, tmp_path):
+    from partylights.engine.state import EngineState
+    tuning = tmp_path / "tuning.json"
+    make = lambda st: create_app(patch=patch, universe=Universe(NullDriver()), state=st,
+                                 engine=None, cues=None, layout_path=tmp_path / "l.json",
+                                 tuning_path=tuning).test_client()
+    client = make(EngineState())
+    client.post("/api/softness", json={"softness": 0.5})
+    assert client.post("/api/floor", json={"floor": 15}).get_json() == {"floor": 15}
+    assert client.post("/api/floor", json={"floor": "x"}).status_code == 400
+    assert client.post("/api/floor", json={}).status_code == 400
+    restarted = EngineState()
+    make(restarted)
+    assert restarted.dimmer_floor == 15 and restarted.softness == 0.5

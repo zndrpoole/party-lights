@@ -20,8 +20,8 @@ from .base import Look
 RING_S = 0.45
 #: Ring width, as a fraction of the half-run.
 RING_W = 0.18
-#: Bed brightness, above the PARs' min_dimmer (about 0.28).
-BED = 0.34
+#: Bed brightness under the rings.
+BED = 0.12
 #: Bars per colour change with a tempo lock; detected kicks without one.
 BARS_PER_COLOUR = 4
 KICKS_PER_COLOUR = 24

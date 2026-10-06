@@ -175,6 +175,8 @@ function apply(s) {
   $("s-master").textContent = pct(st.master) + "%";
   if (dragging !== "r-soft") $("r-soft").value = Math.round(st.softness * 100);
   $("s-soft").textContent = softLabel(st.softness);
+  if (dragging !== "r-floor") $("r-floor").value = st.dimmer_floor;
+  $("s-floor").textContent = floorLabel(st.dimmer_floor);
 
   document.querySelectorAll("[data-look]").forEach((b) =>
     b.classList.toggle("on", b.dataset.look === s.engine.look));
@@ -288,6 +290,18 @@ rs.oninput = () => {
 };
 rs.onchange = () => (dragging = null);
 $("b-soft-reset").onclick = () => post("/api/softness", { softness: 0 });
+
+/* Dimmer floor: a DMX byte below which fixtures are cut to black, for PARs
+   that turn the wrong hue at the bottom of their dimmer. 0 is off. */
+const floorLabel = (v) => (v > 0 ? `DMX ${v}` : "off");
+const rf = $("r-floor");
+rf.oninput = () => {
+  dragging = "r-floor";
+  $("s-floor").textContent = floorLabel(+rf.value);
+  post("/api/floor", { floor: +rf.value });
+};
+rf.onchange = () => (dragging = null);
+$("b-floor-reset").onclick = () => post("/api/floor", { floor: 0 });
 
 loadRig().then(() => {
   const es = new EventSource("/api/stream");

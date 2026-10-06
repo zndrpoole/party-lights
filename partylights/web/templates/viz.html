@@ -66,6 +66,11 @@
 
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
   .toolbar button { min-height: 38px; padding: 6px 12px; font-size: 13px; }
+  #p-arc[data-state="build"] { border-color: #e0a030; }
+  #p-arc[data-state="predrop"] { border-color: #f0f0f0; }
+  #p-arc[data-state="drop"] { border-color: #ff4a2a; background: rgba(255, 74, 42, 0.15); }
+  #p-arc[data-state="breakdown"] { border-color: #8a5cff; }
+  .toolbar select { min-height: 38px; padding: 6px 8px; font-size: 13px; }
   .toolbar button.on { background: var(--accent); border-color: var(--accent); color: #140a02; }
 
   .detail table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -92,6 +97,9 @@
   <h1>Stage</h1>
   <span class="pill"><i class="dot" id="d-wire"></i> Wire <b id="s-fps">—</b></span>
   <span class="pill">Frame <b id="s-frame" class="mono">—</b></span>
+  <span class="pill">Look <b id="s-look">—</b></span>
+  <span class="pill">Beat <b id="s-beat" class="mono">—</b></span>
+  <span class="pill" id="p-arc" title="Song arc: groove, build, predrop (the gap), drop, breakdown">Song <b id="s-arc">—</b></span>
   <span class="spacer"></span>
   <a href="/live">Live</a>
   <a href="/bench">Test bench</a>
@@ -103,7 +111,11 @@
   <button id="b-names">Show addresses</button>
   <button id="b-reset">Reset layout</button>
   <span class="note" id="s-saved" style="margin:0;align-self:center"></span>
+  <span style="flex:1 1 auto"></span>
+  <select id="sel-look" title="Look (auto lets the music choose)"></select>
+  <select id="sel-pal" title="Palette"></select>
 </div>
+<div class="note mono" id="s-layers" style="margin:0 0 8px"></div>
 
 <div class="stage" id="stage"></div>
 
@@ -118,6 +130,8 @@
   and manual overrides show exactly as the rig gets them. Drag to arrange; the
   layout is saved on this machine and shared by every device that opens this page.
   Strobe flash speed is approximate: the fixture times it, not the DMX signal.
+  Spatial looks (rotor, sweep, ripple, pingpong, callresponse) follow this
+  arrangement live: drag fixtures to try a placement and watch the move adapt.
 </div>
 
 </div>

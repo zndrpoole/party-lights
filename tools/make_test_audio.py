@@ -98,6 +98,93 @@ def render(bpm: float, bars: int = 16, *, hats: bool = True, snares: bool = True
     return np.clip(out, -1.0, 1.0), truth
 
 
+def bass_note(dur: float, freq: float = 55.0) -> np.ndarray:
+    """A sub-bass note with a soft attack -- the low end a drop brings back."""
+    n = int(dur * SR)
+    t = np.arange(n) / SR
+    env = np.minimum(1.0, t / 0.01) * np.exp(-3.0 * t)
+    return (np.sin(2 * np.pi * freq * t) * env).astype(np.float32)
+
+
+def riser(dur: float) -> np.ndarray:
+    """Noise plus an upward sine sweep, getting louder: the build's tension."""
+    n = int(dur * SR)
+    t = np.arange(n) / SR
+    ramp = (t / dur) ** 2
+    sweep = np.sin(2 * np.pi * np.cumsum(300.0 + 2700.0 * t / dur) / SR)
+    sig = _band(_noise(n, 33), 800.0, 9000.0) * 0.6 + sweep * 0.25
+    return (sig * ramp).astype(np.float32)
+
+
+#: The EDM arc track, in bars: (section, bars). Builds end with a bar with no
+#: kick and no bass -- the gap before the drop.
+ARC_SECTIONS = (("intro", 8), ("groove", 16), ("build", 8), ("drop", 16),
+                ("breakdown", 8), ("build", 8), ("drop", 16))
+
+
+def render_arc(bpm: float = 128.0) -> tuple[np.ndarray, dict]:
+    """A dance track with a known arc, for checking the song-arc director.
+
+    intro       kicks and hats, quiet, no bass
+    groove      four-on-the-floor, snare on 2 and 4, offbeat hats, bass
+    build       kicks on, bass out, snare roll doubling every 2 bars, riser;
+                the last bar drops the kick (the gap)
+    drop        everything, louder, bass on every beat
+    breakdown   no drums; a soft pad
+    """
+    beat = 60.0 / bpm
+    bars = sum(n for _, n in ARC_SECTIONS)
+    total = int(bars * 4 * beat * SR) + SR
+    out = np.zeros(total, dtype=np.float32)
+    k, s, h = kick(), snare(), hat()
+    b = bass_note(beat * 0.9)
+    truth: dict = {"bpm": bpm, "sections": [], "drops": [], "gaps": []}
+
+    def place(sig, at, gain):
+        i = int(at * SR)
+        j = min(total, i + len(sig))
+        if j > i:
+            out[i:j] += sig[: j - i] * gain
+
+    bar0 = 0
+    for name, n in ARC_SECTIONS:
+        start = bar0 * 4 * beat
+        truth["sections"].append({"name": name, "at": round(start, 3), "bars": n})
+        if name == "drop":
+            truth["drops"].append(round(start, 3))
+        for bar in range(n):
+            for q in range(4):
+                at = (bar0 + bar) * 4 * beat + q * beat
+                last_bar = bar == n - 1
+                if name == "intro":
+                    place(k, at, 0.4)
+                    place(h, at + beat / 2, 0.2)
+                elif name in ("groove", "drop"):
+                    lvl = 1.0 if name == "drop" else 0.7
+                    place(k, at, 0.95 * lvl)
+                    place(b, at, (0.7 if name == "drop" else 0.45))
+                    if q in (1, 3):
+                        place(s, at, 0.55 * lvl)
+                    place(h, at + beat / 2, 0.4 * lvl)
+                elif name == "build":
+                    if not last_bar:
+                        place(k, at, 0.8)
+                    # Snare roll: quarters, then eighths, then sixteenths.
+                    div = 1 if bar < n // 4 else 2 if bar < n // 2 else 4
+                    for d in range(div):
+                        place(s, at + d * beat / div, 0.25 + 0.35 * (bar + 1) / n)
+                elif name == "breakdown":
+                    if q == 0:
+                        pad = np.sin(2 * np.pi * 330.0 * np.arange(int(4 * beat * SR)) / SR)
+                        place((pad * 0.15).astype(np.float32), at, 1.0)
+        if name == "build":
+            place(riser(n * 4 * beat), start, 0.5)
+            truth["gaps"].append(round(start + (n - 1) * 4 * beat, 3))
+        bar0 += n
+    truth["length"] = round(total / SR, 2)
+    return np.clip(out, -1.0, 1.0), truth
+
+
 def save(path: Path, sig: np.ndarray) -> None:
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
@@ -133,6 +220,12 @@ def main() -> int:
     save(args.outdir / "drop_128.wav", sig)
     manifest["drop_128.wav"] = {"bpm": 128, "drop_at": round(len(intro) / SR, 2)}
     print(f"drop_128.wav: {len(sig)/SR:.1f}s  drop at {len(intro)/SR:.1f}s")
+
+    # A dance track with builds, gaps and drops, for the song-arc director.
+    sig, truth = render_arc(128)
+    save(args.outdir / "edm_arc_128.wav", sig)
+    manifest["edm_arc_128.wav"] = truth
+    print(f"edm_arc_128.wav: {len(sig)/SR:.1f}s  drops at {truth['drops']}")
 
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"\nground truth -> {args.outdir / 'manifest.json'}")

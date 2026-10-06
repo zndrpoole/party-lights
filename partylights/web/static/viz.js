@@ -6,7 +6,12 @@
  * the USB port: cable, receiver, address or fixture menu.
  *
  * Positions are fractions of the stage (0..1) and are saved to the server, so
- * one arrangement serves the laptop and the phone alike.
+ * one arrangement serves the laptop and the phone alike. The engine reads them
+ * too: spatial looks move light according to where fixtures sit here.
+ *
+ * The header readout (look, layers, beat) and the pickers are the exception to
+ * "wire only": they come from /api/state, to say *why* the room looks as it
+ * does while designing. The fixtures themselves are still drawn from the wire.
  */
 
 const $ = (id) => document.getElementById(id);
@@ -228,6 +233,47 @@ setInterval(() => {
   frames = 0;
 }, 1000);
 
+/* -- engine readout and pickers --------------------------------------------- */
+
+const post = (url, body) => fetch(url, {
+  method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+function buildPickers() {
+  const look = $("sel-look"), pal = $("sel-pal");
+  look.innerHTML = `<option value="">auto</option>` +
+    rig.looks.map((l) => `<option value="${l.name}" title="${l.description}">${l.name}</option>`).join("");
+  pal.innerHTML = rig.palettes.map((p) => `<option value="${p.name}">${p.name}</option>`).join("");
+  look.onchange = () => (look.value ? post("/api/look", { look: look.value })
+                                     : post("/api/mode", { mode: "auto" }));
+  pal.onchange = () => post("/api/palette", { palette: pal.value });
+}
+
+async function pollState() {
+  try {
+    const s = await (await fetch("/api/state")).json();
+    const eng = s.engine || {}, m = s.music || {};
+    $("s-look").textContent = eng.look || "—";
+    $("s-layers").textContent = eng.layers ? eng.layers.join("  ·  ") : "";
+    $("s-beat").textContent = m.available && m.tempo_locked
+      ? `${Math.floor(m.beat_index / 4) + 1}.${(m.beat_index % 4) + 1}  ${Math.round(m.bpm)}bpm`
+      : "free";
+    // The song arc: state, phrase (anchored once a drop has shown where bar
+    // one is, marked *), and the build's speed-up.
+    const arc = eng.arc;
+    if (arc) {
+      $("p-arc").dataset.state = arc.state;
+      $("s-arc").textContent = `${arc.state}  P${arc.phrase}${arc.anchored ? "*" : ""}`
+        + (arc.rate > 1 ? `  ×${arc.rate}` : "");
+    }
+    // Leave a picker alone while it is open, or it snaps back under the cursor.
+    const look = $("sel-look"), pal = $("sel-pal");
+    if (document.activeElement !== look) look.value = s.state.mode === "auto" ? "" : eng.look;
+    if (document.activeElement !== pal) pal.value = s.state.palette;
+  } catch {}
+}
+
 /* -- start ------------------------------------------------------------------ */
 
 (async () => {
@@ -239,6 +285,9 @@ setInterval(() => {
   rig = await rigRes.json();
   layout = await layoutRes.json();
   build();
+  buildPickers();
+  pollState();
+  setInterval(pollState, 250);
   if (locked) { locked = false; $("b-lock").click(); }
   connect();
 })();

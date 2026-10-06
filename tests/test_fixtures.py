@@ -183,6 +183,15 @@ def test_min_dimmer_defaults_off(rgb_profile):
     assert rgb_profile.render(Emission(rgb=(1, 0, 0), intensity=0.1))[1] == 255
 
 
+def test_live_floor_raises_but_never_lowers_min_dimmer():
+    p = FixtureProfile(model="FLOOR", footprint=2, min_dimmer=10, gamma=1.0,
+                       channels=[ChannelSpec(0, "dimmer"), ChannelSpec(1, "red")])
+    red = Emission(rgb=(1, 0, 0), intensity=20 / 255)
+    assert p.render(red)[0] == 20
+    assert list(p.render(red, floor=25)) == [0, 0]
+    assert list(p.render(Emission(rgb=(1, 0, 0), intensity=8 / 255), floor=0)) == [0, 0]
+
+
 def test_uv_is_never_derived_from_rgb():
     """UV sits outside the visible gamut, so white must not light it up."""
     p = FixtureProfile(model="UV", footprint=4,

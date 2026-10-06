@@ -19,9 +19,7 @@ from .base import Look
 #: and the PARs sat at DMX 1 between kicks. Long enough now that each hit visibly
 #: glows down and overlaps the next kick, so the room pulses rather than blinks.
 DECAY_S = 1.1
-#: Brightness between hits. Zero: each kick fades out to black. A low floor
-#: was tried (0.16), but it lands below the PARs' min_dimmer, where they show
-#: a wrong hue rather than a dim version of the right one.
+#: Brightness between hits. Zero: each kick fades out to black.
 FLOOR = 0.0
 #: Bars per colour change with a tempo lock; detected kicks without one (the
 #: detector over-counts, so this is more than four bars' worth of real kicks).

@@ -19,9 +19,8 @@ from .base import Look
 SPREAD = 0.45
 #: Seconds for the gradient to drift one full palette cycle.
 DRIFT_S = 80.0
-#: Floor brightness, so the room is never actually dark mid-track. Kept above
-#: the PARs' min_dimmer (about 0.28), below which they cannot hold the colour.
-BASE = 0.30
+#: Floor brightness, so the room is never actually dark mid-track.
+BASE = 0.12
 
 
 class WashLook(Look):

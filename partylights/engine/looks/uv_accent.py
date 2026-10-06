@@ -38,13 +38,11 @@ class UvAccentLook(Look):
         n = max(1, len(pars))
         for i, f in enumerate(pars):
             # Deep, slow, and dim. Anything brighter here washes out the UV
-            # effect, which is the whole reason for the look. The bottom stays
-            # just above the PARs' min_dimmer (about 0.28): this look used to
-            # dip to 0.06, which the cutoff turned into PARs blinking off and on.
+            # effect, which is the whole reason for the look.
             wave = 0.5 + 0.5 * math.sin(2.0 * math.pi * (self._t / 14.0 + i / n))
             out[f.fid] = Emission(
                 rgb=palette.sample(0.6 + 0.2 * wave),
-                intensity=clamp(0.32 + 0.08 * wave + 0.12 * music.smooth("bass")),
+                intensity=clamp(0.06 + 0.18 * wave + 0.25 * music.smooth("bass")),
             )
 
         for f in self.accents:

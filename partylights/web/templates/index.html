@@ -39,6 +39,13 @@
       <span>&larr; Sharp</span><button id="b-soft-reset" style="min-height:30px;padding:2px 10px;font-size:12px">Reset</button><span>Smooth &rarr;</span>
     </div>
   </div>
+  <div style="margin-top:14px">
+    <label class="field">Dimmer floor <span id="s-floor" class="mono">off</span></label>
+    <input type="range" id="r-floor" min="0" max="40" step="1" value="0">
+    <div class="row" style="justify-content:space-between;font-size:12px;color:var(--dim);margin-top:2px">
+      <span>Below this DMX level a fixture is sent fully dark</span><button id="b-floor-reset" style="min-height:30px;padding:2px 10px;font-size:12px">Off</button>
+    </div>
+  </div>
   <div class="note" id="s-track"></div>
 </div>
 

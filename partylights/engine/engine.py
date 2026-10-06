@@ -27,10 +27,12 @@ from ..audio.capture import AudioCapture
 from ..audio.features import Envelope, FeatureFrame
 from ..audio.structure import BREAKDOWN, DROP, SECTION_CHANGE
 from ..dmx.universe import Universe
-from ..fixtures.color import BLACK, Emission, clamp
+from ..fixtures.color import BLACK, Emission, clamp, mix
 from ..fixtures.patch import Patch
 from . import palette as palettes
+from .arc import BREAKDOWN_STATE, BUILDING, PREDROP, ArcDirector
 from .looks import BY_NAME, auto_selectable, build_all
+from .space import Space
 from .state import EngineState
 
 log = logging.getLogger(__name__)
@@ -49,6 +51,18 @@ FADE_S = 1.8
 #: diverge whenever audio does not arrive in real time -- which made offline
 #: testing silently misleading, and would freeze the dwell if capture stalled.
 AUTO_DWELL_S = 32.0
+
+#: With a tempo lock, auto mode changes look on phrase boundaries instead of
+#: after AUTO_DWELL_S: every AUTO_PHRASES phrases (16 bars, about 30 s at
+#: 128 BPM), or after half that if a section change was heard in between.
+AUTO_PHRASES = 4
+
+#: What a drop switches to, in turn. Weight first: after a build, a whole room
+#: landing together hits harder than motion. Later drops in the same night get
+#: the moving scenes, so the biggest moments do not all look alike.
+DROP_LOOKS = ("unison", "pingpong", "knockout", "rotor")
+
+WHITE = (1.0, 1.0, 1.0)
 
 #: Seconds for the drop hit to fade: on a drop the whole room goes to full in
 #: the current look's colours, then settles into the new look over about 1.5 s.
@@ -101,7 +115,11 @@ class Engine:
             (output_delay_ms / 1000.0) * (capture.sample_rate if capture else 48000)
         )
 
-        self.looks = build_all(patch)
+        #: Fixture positions, shared by every look. See set_layout().
+        self.space = Space(patch)
+        #: Where we are in the song: build, pre-drop, drop, phrase grid.
+        self.arc = ArcDirector()
+        self.looks = build_all(patch, self.space, self.arc)
         self._active = state.look if state.look in self.looks else "ambient"
         self._previous: str | None = None
         self._fade = 1.0
@@ -109,6 +127,12 @@ class Engine:
 
         #: Audio-clock timestamp of the last look change. See AUTO_DWELL_S.
         self._auto_since = 0.0
+        #: Phrase boundaries crossed, and whether a section change was heard,
+        #: since the last look change. See AUTO_PHRASES.
+        self._phrases_held = 0
+        self._section_heard = False
+        #: Set for the one tick a drop lands. See _direct().
+        self._dropped = False
         self._last_read = 0
         self._music: MusicState | None = None
         #: Onsets seen per region since start, counted across every analysis
@@ -158,6 +182,7 @@ class Engine:
         something to happen.
         """
         self.analyser.on_track_change()
+        self.arc.reset()
         self.state.track_title = title
         self.state.track_artist = artist
         names = palettes.names()
@@ -170,6 +195,10 @@ class Engine:
         log.info("Track change: %s — %s (palette now %s)",
                  artist or "?", title or "?", self.state.palette)
 
+    def set_layout(self, layout: dict) -> None:
+        """Adopt fixture positions from /viz. Spatial looks follow next tick."""
+        self.space.set_layout(layout)
+
     def select(self, name: str) -> bool:
         """Switch look, starting a crossfade. False if the name is unknown."""
         if name not in self.looks or name == self._active:
@@ -179,6 +208,8 @@ class Engine:
         self._fade = 0.0
         self.looks[name].reset()
         self._auto_since = self._music.t if self._music else 0.0
+        self._phrases_held = 0
+        self._section_heard = False
         log.info("Look -> %s", name)
         return True
 
@@ -200,6 +231,9 @@ class Engine:
             "errors": self._errors,
             "last_error": self._last_error,
             "look": self._active,
+            # What a layered scene is built from; None for hand-written looks.
+            "layers": getattr(self.looks[self._active], "layer_names", None),
+            "arc": self.arc.snapshot(),
             "sustained_energy": round(self._energy_env.value, 3),
             "fading_from": self._previous if self._fade < 1.0 else None,
             "fade": round(self._fade, 2),
@@ -263,12 +297,28 @@ class Engine:
         frame = replace(music.frame, onsets={r: False for r in music.frame.onsets})
         return replace(music, frame=frame, events=[], beat=False)
 
+    def _direct(self, music: MusicState, dt: float) -> None:
+        """Follow the song arc. Runs every tick, in manual mode too: a host who
+        picked a look by hand still gets the build, the dark gap and the hit.
+        """
+        self.arc.update(music, dt, self._energy_env.value)
+        self._dropped = self.arc.consume_drop()
+        if self._dropped:
+            self._flash = 1.0
+        if self.arc.phrase_boundary:
+            self._phrases_held += 1
+        if SECTION_CHANGE in music.events:
+            self._section_heard = True
+
     def _choose_auto(self, music: MusicState) -> None:
         """Pick a look from what the music is doing.
 
-        Reacts immediately to structural events and otherwise holds a look for
-        AUTO_DWELL_S. The dwell is what makes this feel like a lighting operator
-        rather than an energy meter driving a selector switch.
+        Reacts immediately to a drop or breakdown and otherwise holds a look:
+        with a tempo lock for AUTO_PHRASES phrases, changing only on a phrase
+        boundary; without one for AUTO_DWELL_S. Holding is what makes this
+        feel like a lighting operator rather than an energy meter driving a
+        selector switch, and changing on the phrase is what makes it feel
+        like one who knows the track.
         """
         now = music.t
         allowed = [n for n in auto_selectable() if n in self.looks]
@@ -286,16 +336,23 @@ class Engine:
             return
 
         events = set(music.events)
-        if DROP in events:
-            # Biggest moment in a track: one full-room hit, then the heaviest
-            # look. Unison rather than chase: after a build, weight lands
-            # harder than motion.
-            self._flash = 1.0
-            pick("unison")
+        if self._dropped:
+            # Biggest moment in a track: the hit is already lit (see _direct);
+            # land in a heavy look, a different one each drop.
+            choices = [n for n in DROP_LOOKS if n in self.looks
+                       and (music.tempo_locked or not self.looks[n].needs_tempo)]
+            if choices:
+                pick(choices[(self.arc.drops - 1) % len(choices)])
             return
         if BREAKDOWN in events:
             # The music drops away, so does the room: PARs out, UV only.
             pick("hush")
+            return
+        if self.arc.state == BREAKDOWN_STATE and self._active == "hush":
+            return
+        if self.arc.state in (BUILDING, PREDROP) and self._active not in ("ambient", "hush"):
+            # Hold the look while the build tightens it; the drop changes it.
+            # A build straight out of a breakdown first needs a look to hold.
             return
 
         # Leaving the idle look is always allowed. The dwell exists to stop
@@ -305,25 +362,41 @@ class Engine:
         # bars of music at sustained energy 0.40 and the engine stayed on
         # ambient, because a track that is already playing when we start
         # produces no drop event to break the dwell.
-        # Hush is held only while the breakdown lasts: once the energy is back
-        # it may leave at once, like ambient.
-        leaving_idle = self._active in ("ambient", "hush") and sustained > MID_ENERGY
-        forced = SECTION_CHANGE in events and now - self._auto_since > AUTO_DWELL_S / 2
-        if not (forced or leaving_idle) and now - self._auto_since < AUTO_DWELL_S:
+        # Hush is held while the breakdown lasts -- until the director hears
+        # the kick come back. Energy alone cannot say: the analyser's gain
+        # control makes a quiet pad read as busy within seconds, and on the
+        # test track hush lasted one tick.
+        leaving_idle = sustained > MID_ENERGY and (
+            self._active == "ambient"
+            or (self._active == "hush" and self.arc.state != BREAKDOWN_STATE))
+        if music.tempo_locked:
+            due = self.arc.phrase_boundary and (
+                self._phrases_held >= AUTO_PHRASES
+                or (self._section_heard and self._phrases_held >= AUTO_PHRASES // 2))
+        else:
+            forced = SECTION_CHANGE in events and now - self._auto_since > AUTO_DWELL_S / 2
+            due = forced or now - self._auto_since >= AUTO_DWELL_S
+        if not (due or leaving_idle):
             return
 
         # Otherwise choose by energy, rotating among the candidates at that
         # energy so a long track does not sit on one look forever.
         # Each list alternates still and moving looks, so consecutive picks
-        # contrast. Chase is one of four rather than one of three, and only
-        # with a tempo lock, which it needs to look intentional.
+        # contrast. The tempo-locked moves (rotor, sweep, chase) only appear
+        # with a lock, which they need to look intentional.
         if sustained > BUSY_ENERGY:
-            candidates = (["pulse", "mirror", "unison", "chase"] if music.tempo_locked
-                          else ["pulse", "mirror", "unison", "sparkle"])
+            candidates = (["pulse", "rotor", "unison", "pingpong", "knockout", "sweep",
+                           "beams", "chase"]
+                          if music.tempo_locked
+                          else ["pulse", "ripple", "unison", "callresponse", "knockout",
+                                "mirror"])
         elif sustained > MID_ENERGY:
-            candidates = ["wash", "unison", "sparkle", "mirror"]
+            candidates = (["wash", "ripple", "drift", "stepper", "unison", "callresponse"]
+                          if music.tempo_locked
+                          else ["wash", "ripple", "drift", "callresponse", "unison",
+                                "sparkle"])
         else:
-            candidates = ["wash", "uv", "ambient"]
+            candidates = ["wash", "drift", "uv", "ambient"]
         candidates = [c for c in candidates if c in self.looks]
         if not candidates:
             return
@@ -348,6 +421,42 @@ class Engine:
             if self._errors % 50 == 1:
                 log.exception("look %s failed", name)
             return {}
+
+    def _arc_shape(self, emissions: dict[str, Emission]) -> dict[str, Emission]:
+        """The build, applied to whatever look is up: PARs lift toward full
+        and wash toward white as it tightens. Before smoothing, so it eases in."""
+        mods = self.arc.mods
+        if mods.floor <= 0.0 and mods.desat <= 0.0:
+            return emissions
+        out = dict(emissions)
+        for f in self.patch.group("pars"):
+            em = emissions.get(f.fid)
+            if em is None:
+                continue
+            out[f.fid] = Emission(mix(em.rgb, WHITE, mods.desat),
+                                  mods.floor + (1.0 - mods.floor) * em.intensity,
+                                  em.strobe, em.uv, em.emitter_bias)
+        return out
+
+    def _arc_cut(self, emissions: dict[str, Emission]) -> dict[str, Emission]:
+        """The pre-drop gap and the riser. After smoothing, so the PARs cut
+        to dark at once instead of fading over the look's release -- the gap
+        is often a single beat. The accent carries the riser in white."""
+        mods = self.arc.mods
+        if mods.blackout <= 0.0 and mods.riser <= 0.0:
+            return emissions
+        out = dict(emissions)
+        keep = 1.0 - mods.blackout
+        for f in self.patch.group("pars"):
+            em = emissions.get(f.fid, BLACK)
+            out[f.fid] = Emission(em.rgb, em.intensity * keep, em.strobe, em.uv,
+                                  em.emitter_bias)
+        for f in self.patch.group("accent"):
+            em = emissions.get(f.fid, BLACK)
+            out[f.fid] = Emission(mix(em.rgb, WHITE, mods.riser),
+                                  max(em.intensity, 0.85 * mods.riser), em.strobe, em.uv,
+                                  max(em.emitter_bias, mods.riser))
+        return out
 
     def _drop_hit(self, emissions: dict[str, Emission], pal, dt: float) -> dict[str, Emission]:
         """Lift every fixture towards full while a drop hit is decaying.
@@ -429,6 +538,8 @@ class Engine:
         state = self.state
         pal = palettes.get(state.palette)
 
+        self._direct(music, dt)
+
         # Honour the host's choice in manual mode; otherwise let the music pick.
         if state.mode == "manual":
             if state.look != self._active:
@@ -463,8 +574,13 @@ class Engine:
             if self._fade >= 1.0:
                 self._previous = None
 
-        emissions = self._drop_hit(emissions, pal, dt)
+        emissions = self._arc_shape(emissions)
         emissions = self._smooth(emissions, dt)
+        # The drop hit goes after smoothing: through the attack it never
+        # reached full (byte 146 of 255 on the live rig), because it was
+        # already decaying while the smoother rose. Its own decay is the fade.
+        emissions = self._drop_hit(emissions, pal, dt)
+        emissions = self._arc_cut(emissions)
 
         # Manual overrides sit above the looks: a fixture the host has taken is
         # not touched by whatever the music is doing.
@@ -472,12 +588,13 @@ class Engine:
             emissions[fid] = em
 
         master = state.master
+        floor = state.dimmer_floor
         for f in self.patch:
             em = emissions.get(f.fid, BLACK)
             if master < 1.0:
                 em = em.with_intensity(master)
             try:
-                f.render_into(self.universe, em)
+                f.render_into(self.universe, em, floor)
             except Exception as e:
                 self._errors += 1
                 self._last_error = f"{f.fid}: {e}"

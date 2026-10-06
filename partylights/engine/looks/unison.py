@@ -14,9 +14,9 @@ import math
 from ...fixtures.color import Emission, clamp
 from .base import Look
 
-#: Steady level between hits. Above the PARs' min_dimmer (about 0.28) with
-#: margin, so the room holds its colour rather than dropping out.
-HOLD = 0.45
+#: Steady level between hits, so the room holds its colour rather than
+#: dropping out.
+HOLD = 0.25
 #: Peak on a downbeat kick, and on any other kick.
 DOWNBEAT_PEAK = 1.0
 KICK_PEAK = 0.75

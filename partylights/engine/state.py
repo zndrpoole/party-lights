@@ -14,6 +14,10 @@ from dataclasses import dataclass, field
 
 from ..fixtures.color import Emission, Rgb, clamp
 
+#: Highest dimmer floor the UI may set. The PARs held their hue from 15 up, so
+#: anything far above that only removes the bottom of every fade.
+MAX_DIMMER_FLOOR = 40
+
 
 @dataclass
 class ManualFixture:
@@ -55,6 +59,9 @@ class EngineState:
         #: Sharp (-1) to smooth (+1); 0 is the tuning as written. See
         #: softness_scale().
         self.softness = 0.0
+        #: Dimmer byte below which a fixture is sent fully dark, for PARs that
+        #: show the wrong hue near the bottom of their dimmer. 0 is off.
+        self.dimmer_floor = 0
         #: Mirrors of the universe's own flags, so the UI can read one object.
         self.blackout = False
         self.freeze = False
@@ -82,6 +89,7 @@ class EngineState:
                 "palette": self.palette,
                 "master": round(self.master, 3),
                 "softness": round(self.softness, 3),
+                "dimmer_floor": self.dimmer_floor,
                 "blackout": self.blackout,
                 "freeze": self.freeze,
                 "track_title": self.track_title,
@@ -121,6 +129,10 @@ class EngineState:
     def set_softness(self, value: float) -> None:
         with self._lock:
             self.softness = clamp(value, -1.0, 1.0)
+
+    def set_dimmer_floor(self, value: int) -> None:
+        with self._lock:
+            self.dimmer_floor = max(0, min(MAX_DIMMER_FLOOR, int(value)))
 
     def softness_scale(self) -> float:
         """Multiplier for every fade time: x0.25 fully sharp, x4 fully smooth.

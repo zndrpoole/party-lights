@@ -13,9 +13,8 @@ For when the room wants mood rather than hits. Three things keep it smooth:
 * A slow wave travels along the run on top, so the room keeps moving even when
   the music is steady.
 
-Brightness never drops below FLOOR - ROLL_DEPTH, which sits above the PARs'
-min_dimmer: below that they cannot hold the colour and are cut to black, and a
-look that dips there blinks.
+Brightness never drops below FLOOR - ROLL_DEPTH, so the colours stay full
+rather than fading out.
 """
 
 from __future__ import annotations
@@ -41,7 +40,7 @@ BLOCK = 3
 SWELL_ATTACK_S = 1.2
 SWELL_RELEASE_S = 3.5
 #: Brightness at silence, and how much the music adds on top.
-FLOOR = 0.48
+FLOOR = 0.30
 SWELL_RANGE = 0.45
 #: The travelling wave: seconds to cross the run, and its depth either way.
 ROLL_S = 11.0

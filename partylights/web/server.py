@@ -30,6 +30,7 @@ from ..config import CONFIG_DIR
 from ..engine import palette as palettes
 from ..engine.cues import PRESETS
 from ..engine.looks import LOOKS
+from ..engine.state import MAX_DIMMER_FLOOR
 from ..fixtures.profile import FixtureProfile
 
 log = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class _JSONProvider(DefaultJSONProvider):
 #: Where /viz keeps the fixture arrangement. Local, like settings.local.yaml:
 #: it describes one room, not the project.
 DEFAULT_LAYOUT = CONFIG_DIR / "layout.local.json"
-#: Live tuning set from the UI (the softness slider), kept across restarts.
+#: Live tuning set from the UI (Feel and the dimmer floor), kept across restarts.
 DEFAULT_TUNING = CONFIG_DIR / "tuning.local.json"
 
 
@@ -183,10 +184,15 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         tmp.write_text(json.dumps(data, indent=2))
         os.replace(tmp, path)
 
-    # Restore the last softness, so a restart does not undo the night's tuning.
+    def save_tuning() -> None:
+        write_json(tuning_file, {"softness": state.softness,
+                                 "dimmer_floor": state.dimmer_floor})
+
+    # Restore the last tuning, so a restart does not undo the night's work.
     try:
         saved = json.loads(tuning_file.read_text())
         state.set_softness(float(saved.get("softness", 0.0)))
+        state.set_dimmer_floor(int(saved.get("dimmer_floor", 0)))
     except FileNotFoundError:
         pass
     except (OSError, ValueError, TypeError, AttributeError):
@@ -200,6 +206,11 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         except (OSError, ValueError):
             log.warning("ignoring unreadable layout file %s", layout_file)
             return {}
+
+    # Spatial looks need the saved arrangement from the start, not only after
+    # the next drag in /viz.
+    if engine is not None:
+        engine.set_layout(read_layout())
 
     # -- pages -----------------------------------------------------------
 
@@ -297,6 +308,8 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             layout[fid] = {"x": round(min(max(x, 0.0), 1.0), 4),
                            "y": round(min(max(y, 0.0), 1.0), 4)}
         write_json(layout_file, layout)
+        if engine is not None:
+            engine.set_layout(layout)
         return jsonify(layout)
 
     @app.route("/api/softness", methods=["POST"])
@@ -307,8 +320,19 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             state.set_softness(float(data["softness"]))
         except (KeyError, TypeError, ValueError):
             return jsonify({"error": "softness must be a number -1..1"}), 400
-        write_json(tuning_file, {"softness": state.softness})
+        save_tuning()
         return jsonify({"softness": state.softness, "scale": round(state.softness_scale(), 3)})
+
+    @app.route("/api/floor", methods=["POST"])
+    def api_floor():
+        """Dimmer byte below which fixtures go fully dark. Saved, like Feel."""
+        data = request.get_json(silent=True) or {}
+        try:
+            state.set_dimmer_floor(int(data["floor"]))
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": f"floor must be a whole number 0..{MAX_DIMMER_FLOOR}"}), 400
+        save_tuning()
+        return jsonify({"floor": state.dimmer_floor})
 
     # -- write -----------------------------------------------------------
 

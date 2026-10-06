@@ -158,6 +158,12 @@ address from your phone and run the rig from anywhere in the house.
 Useful flags while setting up: `--driver null` (no hardware), `--no-audio`,
 `--no-jukebox`. All three let you work on part of the system in isolation.
 
+`--audio-file track.wav` analyses a file instead of the loopback, silently and
+looping, so you can design looks in `/viz` at a laptop. For a track with a
+known build, gap and drop, `python tools/make_test_audio.py /tmp/audio` writes
+`edm_arc_128.wav` (drops at 60 s and 120 s); `/viz` shows the song arc
+(groove / build / predrop / drop / breakdown) in its header.
+
 ### Audio capture
 
 The Mac has no system loopback, so the signal has to be split:

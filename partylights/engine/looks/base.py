@@ -18,6 +18,7 @@ from ...audio.analyser import MusicState
 from ...fixtures.color import BLACK, Emission
 from ...fixtures.patch import Patch
 from ..palette import Palette
+from ..space import Space
 
 
 class Look:
@@ -37,9 +38,15 @@ class Look:
     #: decay or envelope time by this. 1.0 is the tuning as written; above
     #: is smoother, below is sharper. Motion speeds are deliberately exempt.
     time_scale: float = 1.0
+    #: The engine's song-arc director (engine/arc.py), shared by every look,
+    #: or None outside an engine. Looks may read its phrase clock and mods.
+    arc = None
 
     def __init__(self, patch: Patch):
         self.patch = patch
+        #: Where the fixtures are. The engine replaces this with its own shared
+        #: Space, so a layout change from /viz reaches every look at once.
+        self.space = Space(patch)
 
     def reset(self) -> None:
         """Clear animation state. Called when this look becomes active."""
