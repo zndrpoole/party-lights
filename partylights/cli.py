@@ -310,6 +310,8 @@ def main(argv=None) -> int:
     p.add_argument("--status", action="store_true", help="show progress and stop")
     p.add_argument("--limit", type=int, help="map at most this many songs this run")
     p.add_argument("--redo", action="store_true", help="map songs again even if done")
+    p.add_argument("--track", help="map just this one song (Spotify track link or id), "
+                                   "replacing any earlier map of it")
     p.add_argument("--jukebox-dir", default=str(Path(__file__).resolve().parents[2] / "juke-box"),
                    help="where the jukebox lives (its Spotify login is reused)")
     p.set_defaults(fn=cmd_listen)

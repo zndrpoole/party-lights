@@ -170,6 +170,7 @@ class Spotify:
         try:
             resp = self._session.get(url, timeout=15)
             if resp.status_code == 200:
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 tmp = dest.with_name(dest.name + ".tmp")
                 tmp.write_bytes(resp.content)
                 os.replace(tmp, dest)
