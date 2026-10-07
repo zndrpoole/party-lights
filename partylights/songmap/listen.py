@@ -51,6 +51,9 @@ JUMP_S = 1.2
 MAX_TAKES = 3
 #: Peak level (linear) below which BlackHole is hearing nothing.
 SILENT_PEAK = 1e-3
+#: A take with less than this share of audible seconds is treated as silent.
+#: (A take with Spotify's volume at 0 still has the odd blip in it.)
+MIN_AUDIBLE_SHARE = 0.5
 #: Callback stamps further than this from the recording's clock line mean
 #: samples went missing.
 MAX_CLOCK_RESIDUAL_S = 0.015
@@ -77,6 +80,21 @@ def parse_playlist(text: str) -> str | None:
         return m.group(1)
     bare = (text or "").strip().split("?")[0].rstrip("/")
     return bare if re.fullmatch(r"[A-Za-z0-9]{22}", bare) else None
+
+
+def _audible_share(samples: np.ndarray, sample_rate: int) -> float:
+    """Share of one-second blocks with anything above SILENT_PEAK in them."""
+    if not len(samples):
+        return 0.0
+    a = np.abs(samples).reshape(len(samples), -1).max(axis=1)
+    n = max(1, len(a) // int(sample_rate))
+    blocks = a[: n * int(sample_rate)].reshape(n, -1) if len(a) >= sample_rate else a[None, :]
+    return float((blocks.max(axis=1) >= SILENT_PEAK).mean())
+
+
+def parse_track(text: str) -> str | None:
+    m = re.search(r"track[:/]([A-Za-z0-9]{22})", text or "") or re.fullmatch(r"\s*([A-Za-z0-9]{22})\s*", text or "")
+    return m.group(1) if m else None
 
 
 def _mmss(s: float) -> str:
@@ -122,6 +140,15 @@ class ListeningPass:
         else:
             self.device_id = dev["id"]
             self.out(f"  Playing on: {dev.get('name')}")
+            vol = dev.get("volume_percent")
+            if vol == 0:
+                probs.append(Problem("error",
+                    "Spotify's volume is at 0, so every recording would be silent. Turn the "
+                    "volume slider in the Spotify app up (all the way is best)."))
+            elif vol is not None and vol < 50:
+                probs.append(Problem("warn",
+                    f"Spotify's volume is at {vol}%. Turn it all the way up in the Spotify "
+                    "app for the cleanest maps."))
 
         pending = self._jukebox_pending()
         if pending:
@@ -298,7 +325,7 @@ class ListeningPass:
             return Verdict(False, f"the recording clock slipped {resid * 1000:.0f} ms")
         if len(polls) < 5:
             return Verdict(False, "too few position readings to place the song")
-        if not len(take.samples) or float(np.abs(take.samples).max()) < SILENT_PEAK:
+        if _audible_share(take.samples, take.sample_rate) < MIN_AUDIBLE_SHARE:
             return Verdict(False, "the recording is silent — the Mac's sound isn't reaching "
                            "BlackHole", retry=False, fatal=True)
         return Verdict(True)
@@ -483,7 +510,14 @@ def main(args, settings) -> int:
         print("\nAll set.")
         return 0
 
-    tracks = lp.load_tracks(args.playlist)
+    if args.track:
+        tid = parse_track(args.track)
+        if not tid:
+            raise SystemExit(f"that doesn't look like a Spotify track link: {args.track}")
+        tracks = [sp.track(tid)]
+        args.redo = True
+    else:
+        tracks = lp.load_tracks(args.playlist)
     caff = keep_awake()
     rec.start()
     print("\nRecording from", rec.device_name, "— leave the Mac plugged in and the lid open.")

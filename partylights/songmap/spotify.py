@@ -170,6 +170,7 @@ class Spotify:
         try:
             resp = self._session.get(url, timeout=15)
             if resp.status_code == 200:
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 tmp = dest.with_name(dest.name + ".tmp")
                 tmp.write_bytes(resp.content)
                 os.replace(tmp, dest)
@@ -180,9 +181,9 @@ class Spotify:
 
     # -- control -------------------------------------------------------------------
 
-    def play(self, uri: str, device_id: str) -> None:
+    def play(self, uri: str, device_id: str, position_ms: int = 0) -> None:
         self._call("PUT", "/me/player/play", params={"device_id": device_id},
-                   body={"uris": [uri], "position_ms": 0})
+                   body={"uris": [uri], "position_ms": int(position_ms)})
 
     def pause(self, device_id: str | None = None) -> None:
         try:

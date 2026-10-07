@@ -13,3 +13,5 @@ config/tuning.local.json
 # Listening pass: raw features are large and rebuildable only by replaying
 # the songs, so back them up, but keep them out of git
 songs/frames/
+# Listening-pass run log
+songs/pass-log.jsonl
