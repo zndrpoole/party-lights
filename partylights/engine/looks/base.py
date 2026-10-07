@@ -29,6 +29,10 @@ class Look:
     #: Whether this look needs a locked tempo to make sense. The engine avoids
     #: selecting these in auto mode until the tempo tracker has locked.
     needs_tempo = False
+    #: How hard the look goes, 0 (a still, calm room) to 1 (hard cuts and
+    #: hits). The vibe control lets auto mode pick only looks near its
+    #: setting; see Engine._band().
+    wildness: float = 0.5
     #: Seconds for brightness to fall in the engine's output smoothing, or None
     #: for the global engine.release_ms. Crisp looks set it short so their hits
     #: snap; drifting looks set it long. The contrast between the two is what

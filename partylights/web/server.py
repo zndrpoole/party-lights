@@ -29,6 +29,7 @@ from flask.json.provider import DefaultJSONProvider
 from ..config import CONFIG_DIR
 from ..engine import palette as palettes
 from ..engine.cues import PRESETS
+from ..engine.effects import EFFECTS
 from ..engine.looks import LOOKS
 from ..engine.state import MAX_DIMMER_FLOOR
 from ..fixtures.profile import FixtureProfile
@@ -116,6 +117,10 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
                 {"name": name, "look": look, "palette": pal, "description": desc}
                 for name, (look, pal, desc) in PRESETS.items()
             ],
+            "effects": [
+                {"name": e.name, "description": e.description, "kind": e.kind}
+                for e in EFFECTS
+            ],
         }
 
     def music_payload() -> dict:
@@ -187,6 +192,7 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
 
     def save_tuning() -> None:
         write_json(tuning_file, {"softness": state.softness,
+                                 "vibe": state.vibe,
                                  "dimmer_floor": state.dimmer_floor,
                                  "palette_auto": state.palette_auto,
                                  "palette_pool": list(state.palette_pool)})
@@ -196,6 +202,7 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         saved = json.loads(tuning_file.read_text())
         state.set_softness(float(saved.get("softness", 0.0)))
         state.set_dimmer_floor(int(saved.get("dimmer_floor", 0)))
+        state.set_vibe(float(saved.get("vibe", 0.5)))
         if "palette_auto" in saved:
             state.set_palette_auto(bool(saved["palette_auto"]))
         if isinstance(saved.get("palette_pool"), list):
@@ -329,6 +336,17 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             return jsonify({"error": "softness must be a number -1..1"}), 400
         save_tuning()
         return jsonify({"softness": state.softness, "scale": round(state.softness_scale(), 3)})
+
+    @app.route("/api/vibe", methods=["POST"])
+    def api_vibe():
+        """Calm (0) to wild (1) for auto mode. Saved, like Feel."""
+        data = request.get_json(silent=True) or {}
+        try:
+            result = cues.vibe(float(data["vibe"]))
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "vibe must be a number 0..1"}), 400
+        save_tuning()
+        return jsonify(result)
 
     @app.route("/api/floor", methods=["POST"])
     def api_floor():
@@ -493,7 +511,7 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         """
         try:
             result = cues.fire(name)
-            if name == "palette-auto":
+            if name == "palette-auto" or name.startswith("vibe"):
                 save_tuning()
             return jsonify(result)
         except KeyError as e:

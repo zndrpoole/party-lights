@@ -29,6 +29,7 @@ KICKS_PER_COLOUR = 32
 
 class UnisonLook(Look):
     name = "unison"
+    wildness = 0.55
     description = "Whole room in one colour, hitting together on the downbeat"
     #: Output release. Short: the hit should snap, then the look's own decay rolls it off.
     release_s = 0.12

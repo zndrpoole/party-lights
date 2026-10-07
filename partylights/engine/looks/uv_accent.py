@@ -19,6 +19,7 @@ from .base import Look
 
 class UvAccentLook(Look):
     name = "uv"
+    wildness = 0.15
     description = "Blacklight from the accent fixture over a dark bed"
     #: Output release. Short or long because it is the late-night look.
     release_s = 0.60

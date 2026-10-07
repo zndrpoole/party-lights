@@ -24,6 +24,7 @@ DRIFT_S = 75.0
 
 class AmbientLook(Look):
     name = "ambient"
+    wildness = 0.0
     description = "Slow breathing wash — for lulls, speeches and silence"
     #: Output release. Short or long because it is the idle look.
     release_s = 0.60

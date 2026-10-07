@@ -27,6 +27,7 @@ FLOOR = 0.05
 
 class SparkleLook(Look):
     name = "sparkle"
+    wildness = 0.45
     description = "Scattered flashes on hi-hats over a dim wash"
     #: Output release. Short or long because a glint has to end to read as a glint.
     release_s = 0.20

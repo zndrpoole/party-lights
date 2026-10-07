@@ -29,6 +29,7 @@ KICKS_PER_COLOUR = 24
 
 class MirrorLook(Look):
     name = "mirror"
+    wildness = 0.6
     description = "Hits burst from the centre out, then close back in — symmetric"
     #: Output release. Short, so the ring stays a ring rather than a smear.
     release_s = 0.15

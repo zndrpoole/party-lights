@@ -25,6 +25,7 @@ BASE = 0.12
 
 class WashLook(Look):
     name = "wash"
+    wildness = 0.3
     description = "Colour gradient across the room, brightness follows the mix"
     #: Output release. Short or long because it is the drifting look.
     release_s = 0.45
