@@ -216,6 +216,18 @@ PALETTES: tuple[Palette, ...] = (
         theme="club",
     ),
     Palette(
+        "tame-impala",
+        # Currents magenta, Lonerism/Innerspeaker orange, psychedelic teal and
+        # violet. Ordered so the swell look (colour i with i + 2) always pairs
+        # a warm with a cool: magenta/teal, orange/violet.
+        (hsv(0.90, 0.9, 1.0),    # Currents magenta
+         hsv(0.06, 1.0, 1.0),    # burnt orange
+         hsv(0.47, 1.0, 0.9),    # psychedelic teal
+         hsv(0.76, 0.95, 1.0)),  # violet
+        "Psychedelic magenta, burnt orange, teal, violet",
+        theme="party",
+    ),
+    Palette(
         "mono-white",
         (hsv(0.0, 0.0, 1.0),),
         "Plain white — for finding your keys",
