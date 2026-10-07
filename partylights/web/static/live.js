@@ -24,23 +24,55 @@ const CUES = [
     on: (s) => s.engine.look === "blinder" },
 ];
 
+/* The host's effects, in their own row below the six: dropped over whatever
+   is playing, never chosen by auto mode. */
+const EFFECTS = [
+  { key: "l", label: "L", name: "effect/lightning", title: "Lightning",
+    on: (s) => !!(s.engine.effects || {}).lightning },
+  { key: "c", label: "C", name: "effect/candle",    title: "Candle",
+    on: (s) => (s.engine.effects || {}).hold === "candle" },
+  { key: "h", label: "H", name: "effect/heartbeat", title: "Heartbeat",
+    on: (s) => (s.engine.effects || {}).hold === "heartbeat" },
+];
+
 const els = {};
-const container = $("cues");
-CUES.forEach((c) => {
-  const el = document.createElement("div");
-  el.className = "cue" + (c.danger ? " danger" : "");
-  el.innerHTML = `<div class="t">${c.title}</div><div class="k">${c.label}</div>`;
-  el.onclick = () => fire(c.name);
-  container.appendChild(el);
-  els[c.name] = el;
-});
+function build(list, container) {
+  list.forEach((c) => {
+    const el = document.createElement("div");
+    el.className = "cue" + (c.danger ? " danger" : "");
+    el.innerHTML = `<div class="t">${c.title}</div><div class="k">${c.label}</div>`;
+    el.onclick = () => fire(c.name);
+    container.appendChild(el);
+    els[c.name] = el;
+  });
+}
+build(CUES, $("cues"));
+build(EFFECTS, $("effects"));
+
+/* Vibe: how hard auto mode goes. Matches the control page's slider. */
+let draggingVibe = false;
+function vibeLabel(v) {
+  if (Math.abs(v - 0.5) < 0.025) return "as tuned";
+  const name = v < 0.15 ? "calm" : v < 0.45 ? "chill" : v < 0.85 ? "lively" : "wild";
+  return `${name} ${Math.round(v * 100)}`;
+}
+const rv = $("r-vibe");
+rv.oninput = () => {
+  draggingVibe = true;
+  $("s-vibe").textContent = vibeLabel(rv.value / 100);
+  fetch("/api/vibe", { method: "POST", headers: { "Content-Type": "application/json" },
+                       body: JSON.stringify({ vibe: rv.value / 100 }) });
+};
+rv.onchange = () => (draggingVibe = false);
 
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key.toLowerCase();
   if (k === "arrowup")   { e.preventDefault(); return void fire("master-up"); }
   if (k === "arrowdown") { e.preventDefault(); return void fire("master-down"); }
-  const cue = CUES.find((c) => c.key === k || c.key === e.key);
+  if (k === "]") { e.preventDefault(); return void fire("vibe-up"); }
+  if (k === "[") { e.preventDefault(); return void fire("vibe-down"); }
+  const cue = [...CUES, ...EFFECTS].find((c) => c.key === k || c.key === e.key);
   if (cue) { e.preventDefault(); fire(cue.name); }
 });
 
@@ -73,9 +105,11 @@ function apply(s) {
   const t = s.jukebox.track;
   $("s-track").textContent = t && t.title ? `${t.artist} — ${t.title}` : "";
 
-  CUES.forEach((c) => {
+  [...CUES, ...EFFECTS].forEach((c) => {
     if (c.on) els[c.name].classList.toggle("on", !!c.on(s));
   });
+  if (!draggingVibe) rv.value = Math.round(s.state.vibe * 100);
+  $("s-vibe").textContent = vibeLabel(s.state.vibe);
 }
 
 const es = new EventSource("/api/stream");

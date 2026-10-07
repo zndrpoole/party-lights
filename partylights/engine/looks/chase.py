@@ -34,6 +34,7 @@ BARS_PER_COLOUR = 4
 
 class ChaseLook(Look):
     name = "chase"
+    wildness = 0.75
     description = "Bright head sweeping the room, locked to the beat"
     #: Output release. Short or long because the head should read as a light, not a smear.
     release_s = 0.20

@@ -7,6 +7,8 @@
     python -m partylights.cli rig                 # print the patch
     python -m partylights.cli cues                # list cues
     python -m partylights.cli streamdeck ~/cues   # write Stream Deck scripts
+    python -m partylights.cli listen <playlist>   # the listening pass (LISTENING_PASS.md)
+    python -m partylights.cli songmap show <name> # what the pass heard in a song
 
 Startup order matters and is handled here: the DMX writer comes up first so the
 fixtures are receiving frames (all zero) before anything tries to light them,
@@ -225,6 +227,43 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_listen(args) -> int:
+    from .songmap.listen import main as listen_main
+    return listen_main(args, Settings.load(args.settings))
+
+
+def cmd_songmap(args) -> int:
+    from .songmap import songmap as sm
+    if args.action == "show":
+        from .songmap.listen import show
+        return show(args.target)
+    if args.action == "file":
+        # Map a local audio file, for checking the analysis by ear.
+        from tools.analyze_file import decode
+        song_map, _, _ = sm.analyse(decode(Path(args.target)))
+        song_map["track"] = {"name": Path(args.target).name, "artists": []}
+        print(sm.summary(song_map))
+        return 0
+    if args.action == "reanalyse":
+        # Rebuild maps from stored frames after the analysis improves.
+        store = sm.Store()
+        n = 0
+        for tid in store.track_ids():
+            old = store.load(tid)
+            if old.get("analysis_version") == sm.ANALYSIS_VERSION and not args.force:
+                continue
+            frames = sm.load_frames(store.frames / f"{tid}.npz")
+            new = sm.analyse_frames(frames)
+            for keep in ("track", "capture"):
+                if keep in old:
+                    new[keep] = old[keep]
+            sm.write_json(store.map_path(tid), new)
+            n += 1
+        print(f"re-analysed {n} map(s)")
+        return 0
+    return 1
+
+
 def create_web_app(patch, universe, state, engine, cues, capture, jukebox):
     from .web.server import create_app
     return create_app(patch=patch, universe=universe, state=state,
@@ -263,6 +302,23 @@ def main(argv=None) -> int:
     p.add_argument("--host", default="localhost")
     p.add_argument("--port", default="5055")
     p.set_defaults(fn=cmd_streamdeck)
+
+    p = sub.add_parser("listen", help="the listening pass: map every song in a playlist")
+    p.add_argument("playlist", nargs="?", help="Spotify playlist link (first run; later "
+                                               "runs reuse the saved list)")
+    p.add_argument("--check", action="store_true", help="run the checks and stop")
+    p.add_argument("--status", action="store_true", help="show progress and stop")
+    p.add_argument("--limit", type=int, help="map at most this many songs this run")
+    p.add_argument("--redo", action="store_true", help="map songs again even if done")
+    p.add_argument("--jukebox-dir", default=str(Path(__file__).resolve().parents[2] / "juke-box"),
+                   help="where the jukebox lives (its Spotify login is reused)")
+    p.set_defaults(fn=cmd_listen)
+
+    p = sub.add_parser("songmap", help="inspect or rebuild song maps")
+    p.add_argument("action", choices=["show", "file", "reanalyse"])
+    p.add_argument("target", nargs="?", default="")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(fn=cmd_songmap)
 
     args = ap.parse_args(argv)
     setup_logging(args.log)

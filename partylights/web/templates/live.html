@@ -63,9 +63,21 @@
 
 <div class="cues" id="cues"></div>
 
+<h2 style="margin-top:22px">Effects</h2>
+<div class="cues" id="effects"></div>
+
+<div class="panel" style="margin-top:16px">
+  <label class="field">Vibe <span id="s-vibe" class="mono">as tuned</span></label>
+  <input type="range" id="r-vibe" min="0" max="100" step="5" value="50" list="vibe-ticks">
+  <datalist id="vibe-ticks"><option value="50"></option></datalist>
+  <div class="row" style="justify-content:space-between;font-size:12px;color:var(--dim);margin-top:2px">
+    <span>&larr; Calm</span><span>Wild &rarr;</span>
+  </div>
+</div>
+
 <div class="note">
   Keyboard: the key shown on each button. <b>Space</b> is blackout.
-  Arrow <b>&uarr;/&darr;</b> adjusts master. These are the same endpoints a
+  Arrow <b>&uarr;/&darr;</b> adjusts master, <b>[</b> and <b>]</b> the vibe. These are the same endpoints a
   Stream Deck button hits, so anything here can be bound to hardware.
 </div>
 

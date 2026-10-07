@@ -20,6 +20,7 @@ from .layered import LayeredLook, Stack
 
 class RotorScene(LayeredLook):
     name = "rotor"
+    wildness = 0.75
     description = "Two heads spinning round the centre of the rig, colour wheel underneath"
     needs_tempo = True
     release_s = 0.18
@@ -36,6 +37,7 @@ class RotorScene(LayeredLook):
 
 class SweepScene(LayeredLook):
     name = "sweep"
+    wildness = 0.65
     description = "A wave front washing left to right and back, once a bar"
     needs_tempo = True
     release_s = 0.20
@@ -51,6 +53,7 @@ class SweepScene(LayeredLook):
 
 class RippleScene(LayeredLook):
     name = "ripple"
+    wildness = 0.5
     description = "Kicks send rings out from the centre and back, two colours split"
     release_s = 0.15
 
@@ -65,6 +68,7 @@ class RippleScene(LayeredLook):
 
 class PingPongScene(LayeredLook):
     name = "pingpong"
+    wildness = 0.8
     description = "The two halves of the rig trade every two beats, punching on kicks"
     needs_tempo = True
     release_s = 0.12
@@ -80,6 +84,7 @@ class PingPongScene(LayeredLook):
 
 class CallResponseScene(LayeredLook):
     name = "callresponse"
+    wildness = 0.5
     description = "Left half answers the kick, right half the snare"
     release_s = 0.15
 
@@ -93,6 +98,7 @@ class CallResponseScene(LayeredLook):
 
 class StepperScene(LayeredLook):
     name = "stepper"
+    wildness = 0.55
     description = "Marquee: every third fixture lit, stepping on the beat"
     needs_tempo = True
     release_s = 0.10
@@ -109,6 +115,7 @@ class StepperScene(LayeredLook):
 
 class KnockoutScene(LayeredLook):
     name = "knockout"
+    wildness = 0.9
     description = "Room lit full, every kick cuts it dark — hard edges, great in fog"
     release_s = 0.05
     floor = 0.0
@@ -125,6 +132,7 @@ class KnockoutScene(LayeredLook):
 
 class DriftScene(LayeredLook):
     name = "drift"
+    wildness = 0.2
     description = "Slow drifting colour clouds, breathing with the music — no hits"
     release_s = 0.6
     floor = 0.12
@@ -139,6 +147,7 @@ class DriftScene(LayeredLook):
 
 class BeamsScene(LayeredLook):
     name = "beams"
+    wildness = 0.85
     description = "Everything snaps on with the kick and straight off — for foggy nights"
     release_s = 0.05
     floor = 0.0

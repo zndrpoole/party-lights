@@ -179,7 +179,7 @@ address from your phone and run the rig from anywhere in the house.
 | | |
 |---|---|
 | `/` | Full control: mode, master, looks, palettes, live meters, per-fixture override |
-| `/live` | Six big cue buttons with keyboard shortcuts, mirroring the Stream Deck |
+| `/live` | Six big cue buttons mirroring the Stream Deck, plus the effects and the vibe slider |
 | `/api/cue/<name>` | The cue API — what the Stream Deck hits |
 
 Useful flags while setting up: `--driver null` (no hardware), `--no-audio`,
@@ -260,12 +260,60 @@ engine caps how long a strobe can run (`engine.max_strobe_seconds`) so a stuck
 button or a forgotten cue cannot leave the room flashing. That cap is a safety
 rail, not a style choice.
 
+### Effects
+
+Three moments the host drops into the middle of a song by hand — never chosen
+by auto mode. They sit over whatever look is running, and auto mode carries on
+underneath, so switching one off lands back in the show where the music is.
+
+| Effect | |
+|---|---|
+| `lightning` | Fires once: two or three cold white flashes over a ducked show, then eases back. At most three flashes in any second, however hard the button is mashed |
+| `candle` | Holds until pressed again: warm, gently flickering light, each fixture on its own |
+| `heartbeat` | Holds until pressed again: a deep red lub-dub from the middle of the yard, locked to the song but halved until it is 80 BPM or slower |
+
+Cues: `effect/lightning`, `effect/candle`, `effect/heartbeat`, `effect/off`.
+`resume-auto` also releases a held effect. On `/live` they are **L**, **C**, **H**.
+
+### Vibe
+
+One slider, calm to wild, for steering auto mode without taking it over. The
+middle is auto mode exactly as written. Towards calm, auto keeps to still,
+hitless looks, holds each one longer, and softens the song arc until a drop no
+longer flashes and a build no longer cuts the room dark. Towards wild, it reads
+the music as more energetic, skips the calmest looks, and changes look twice as
+often. A look the new setting rules out goes on the next phrase line. Master and
+Feel are separate: vibe changes neither brightness nor fade times. Each look's
+`wildness` (0..1) is what the slider selects on. Saved across restarts.
+
+Cues: `vibe-up`, `vibe-down`, `vibe/<0..1>`. On `/live`, **[** and **]**.
+
+### Presets
+
+A look and palette fired together, listed calm to wild: `seance`, `graveyard`,
+`halloween-smooth`, `blood-moon`, `cauldron`, `monster-mash`, `toxic`,
+`fright-night`. Cue: `preset/<name>`. Like picking a look by hand, a preset
+takes manual control until `resume-auto`.
+
 ### Adding a look
 
 One file in `partylights/engine/looks/`, one entry in that package's `LOOKS`
-tuple. Subclass `Look`, implement `render(music, palette, dt)`, return a dict of
+tuple. Give it a `wildness` so the vibe slider knows where it belongs. Subclass `Look`, implement `render(music, palette, dt)`, return a dict of
 fixture id to `Emission`. Omitted fixtures go black, so a look only describes
 what it drives.
+
+## Song maps: the listening pass
+
+Weeks before the party, every song on the party playlist is played once,
+silently, and mapped: every beat and bar, the sections, the drops, gaps and
+endings, plus a fingerprint the live rig uses to find its place to within a
+few milliseconds. See **[LISTENING_PASS.md](LISTENING_PASS.md)**.
+
+```bash
+python -m partylights.cli listen --check
+python -m partylights.cli listen "<playlist link>" --limit 3
+python -m partylights.cli songmap show "<song name>"
+```
 
 ## Stream Deck and keyboard
 
@@ -282,7 +330,8 @@ one. Reassigning is a one-line edit because every cue is just a URL.
 
 ```
 blackout  freeze  mode  next-look  palette  master-up  master-down
-clear-manual  resume-auto  look/<name>  palette/<name>
+vibe-up  vibe-down  clear-manual  resume-auto  look/<name>  palette/<name>
+preset/<name>  effect/<name>
 ```
 
 `python -m partylights.cli cues` lists them all. `resume-auto` is the "undo all

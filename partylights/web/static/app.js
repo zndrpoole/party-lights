@@ -65,6 +65,18 @@ async function loadRig() {
     presets.appendChild(b);
   });
 
+  const effects = $("effects");
+  effects.innerHTML = "";
+  (rig.effects || []).forEach((e) => {
+    const b = document.createElement("button");
+    b.textContent = e.name;
+    b.title = e.description;
+    b.dataset.effect = e.name;
+    b.dataset.kind = e.kind;
+    b.onclick = () => fetch(`/api/cue/effect/${e.name}`, { method: "POST" });
+    effects.appendChild(b);
+  });
+
   // Each palette is built once and moved between Active and its theme's
   // Inactive group as the pool changes; see placePalettes().
   const inactive = $("pal-inactive");
@@ -225,6 +237,8 @@ function apply(s) {
     $("r-master").value = pct(st.master);
   }
   $("s-master").textContent = pct(st.master) + "%";
+  if (dragging !== "r-vibe") $("r-vibe").value = Math.round(st.vibe * 100);
+  $("s-vibe").textContent = vibeLabel(st.vibe);
   if (dragging !== "r-soft") $("r-soft").value = Math.round(st.softness * 100);
   $("s-soft").textContent = softLabel(st.softness);
   if (dragging !== "r-floor") $("r-floor").value = st.dimmer_floor;
@@ -238,6 +252,10 @@ function apply(s) {
   $("s-palette-auto").textContent = st.palette_auto ? "auto" : "manual";
   // Lit when manual, like the look Mode button: orange means "the host is driving".
   $("b-palette-auto").classList.toggle("on", !st.palette_auto);
+  const fx = s.engine.effects || {};
+  document.querySelectorAll("[data-effect]").forEach((b) =>
+    b.classList.toggle("on", b.dataset.kind === "hit" ? !!fx.lightning
+                                                      : fx.hold === b.dataset.effect));
   document.querySelectorAll("[data-preset]").forEach((b) =>
     b.classList.toggle("on", b.dataset.presetLook === s.engine.look &&
                              b.dataset.presetPalette === st.palette));
@@ -332,6 +350,21 @@ document.querySelector("[data-group-all]").onclick = () =>
 const rm = $("r-master");
 rm.oninput = () => { dragging = "r-master"; post("/api/master", { master: rm.value / 100 }); };
 rm.onchange = () => (dragging = null);
+
+/* Vibe: how hard auto mode goes, calm to wild. The middle is as written. */
+function vibeLabel(v) {
+  if (Math.abs(v - 0.5) < 0.025) return "as tuned";
+  const name = v < 0.15 ? "calm" : v < 0.45 ? "chill" : v < 0.85 ? "lively" : "wild";
+  return `${name} ${Math.round(v * 100)}`;
+}
+const rv = $("r-vibe");
+rv.oninput = () => {
+  dragging = "r-vibe";
+  $("s-vibe").textContent = vibeLabel(rv.value / 100);
+  post("/api/vibe", { vibe: rv.value / 100 });
+};
+rv.onchange = () => (dragging = null);
+$("b-vibe-reset").onclick = () => post("/api/vibe", { vibe: 0.5 });
 
 /* Feel: one control over every fade time, x0.25 (sharp) to x4 (smooth). */
 function softLabel(v) {

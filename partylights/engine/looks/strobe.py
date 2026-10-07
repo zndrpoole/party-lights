@@ -18,6 +18,7 @@ from .base import Look
 
 class StrobeLook(Look):
     name = "strobe"
+    wildness = 1.0
     description = "Hard white strobe — manual only, time-limited"
     #: Excluded from automatic selection. See the module docstring.
     manual_only = True
@@ -34,6 +35,7 @@ class StrobeLook(Look):
 
 class BlinderLook(Look):
     name = "blinder"
+    wildness = 1.0
     description = "Everything full white — for finding your keys"
     manual_only = True
 

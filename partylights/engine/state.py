@@ -70,6 +70,10 @@ class EngineState:
         #: Sharp (-1) to smooth (+1); 0 is the tuning as written. See
         #: softness_scale().
         self.softness = 0.0
+        #: Calm (0) to wild (1); 0.5 is the auto mode as written. Shapes which
+        #: looks auto mode picks and how hard a song's big moments land. See
+        #: Engine._band().
+        self.vibe = 0.5
         #: Dimmer byte below which a fixture is sent fully dark, for PARs that
         #: show the wrong hue near the bottom of their dimmer. 0 is off.
         self.dimmer_floor = 0
@@ -102,6 +106,7 @@ class EngineState:
                 "palette_pool": list(self.palette_pool),
                 "master": round(self.master, 3),
                 "softness": round(self.softness, 3),
+                "vibe": round(self.vibe, 3),
                 "dimmer_floor": self.dimmer_floor,
                 "blackout": self.blackout,
                 "freeze": self.freeze,
@@ -175,6 +180,10 @@ class EngineState:
     def set_softness(self, value: float) -> None:
         with self._lock:
             self.softness = clamp(value, -1.0, 1.0)
+
+    def set_vibe(self, value: float) -> None:
+        with self._lock:
+            self.vibe = clamp(value)
 
     def set_dimmer_floor(self, value: int) -> None:
         with self._lock:

@@ -29,6 +29,7 @@ KICKS_PER_COLOUR = 24
 
 class PulseLook(Look):
     name = "pulse"
+    wildness = 0.7
     description = "Alternating halves hit on every kick"
     #: Output release. Short or long because its own decay already shapes the roll-off.
     release_s = 0.12

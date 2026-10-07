@@ -32,6 +32,7 @@ from ..fixtures.color import BLACK, Emission, clamp, mix
 from ..fixtures.patch import Patch
 from . import palette as palettes
 from .arc import BREAKDOWN_STATE, BUILDING, PREDROP, ArcDirector
+from .effects import EffectRack
 from .looks import BY_NAME, auto_selectable, build_all
 from .space import Space
 from .state import EngineState
@@ -89,6 +90,30 @@ MID_ENERGY = 0.30
 ENERGY_ATTACK_S = 0.05
 ENERGY_RELEASE_S = 2.5
 
+#: The vibe control (EngineState.vibe, 0 calm .. 1 wild; 0.5 is the auto mode
+#: as written) works through four things, none of them brightness or fade
+#: times, which Master and Feel already own:
+#:
+#: * Which looks auto mode may pick: those whose `wildness` sits inside a band
+#:   that slides up with the vibe. Calm keeps to still, hitless looks; wild
+#:   drops the calmest ones. See _band().
+#: * How loud the music seems to auto mode. Wild reads the same track as more
+#:   energetic, so it reaches the busy looks sooner; calm the reverse.
+#: * How long a look holds: twice as long at calm, half at wild.
+#: * How hard the song arc lands -- the build, the dark gap before a drop and
+#:   the drop's flash. Full from the middle up, fading out towards calm, so a
+#:   calm room is never suddenly cut dark.
+#:
+#: Band edges at each end of the slider. At 0.5 every auto look is inside,
+#: which is what makes the middle the auto mode as written.
+VIBE_CEILING_CALM = 0.25
+VIBE_CEILING_SLOPE = 1.3
+VIBE_FLOOR_SLOPE = 0.8
+#: A band holding fewer looks than this at some energy borrows in-band looks
+#: from the rest of the pool, so a calm room still rotates instead of sitting
+#: on one look all night.
+VIBE_MIN_CHOICES = 2
+
 
 class Engine:
     def __init__(
@@ -118,6 +143,8 @@ class Engine:
 
         #: Fixture positions, shared by every look. See set_layout().
         self.space = Space(patch)
+        #: The host's effects -- lightning, candle, heartbeat -- over the top.
+        self.effects = EffectRack(patch, self.space)
         #: Where we are in the song: build, pre-drop, drop, phrase grid.
         self.arc = ArcDirector()
         self.looks = build_all(patch, self.space, self.arc)
@@ -238,7 +265,24 @@ class Engine:
             "sustained_energy": round(self._energy_env.value, 3),
             "fading_from": self._previous if self._fade < 1.0 else None,
             "fade": round(self._fade, 2),
+            "effects": self.effects.snapshot(),
         }
+
+    # -- vibe ------------------------------------------------------------
+
+    def _band(self) -> tuple[float, float]:
+        """The wildness range auto mode may pick from at the current vibe."""
+        v = self.state.vibe
+        return (max(0.0, (v - 0.5) * VIBE_FLOOR_SLOPE),
+                VIBE_CEILING_CALM + VIBE_CEILING_SLOPE * v + 1e-9)
+
+    def _in_band(self, name: str, band: tuple[float, float]) -> bool:
+        return band[0] <= getattr(self.looks[name], "wildness", 0.5) <= band[1]
+
+    def _arc_strength(self) -> float:
+        """How much of the song arc to show: all of it from the middle of
+        the vibe up, fading to none at fully calm."""
+        return min(1.0, 2.0 * self.state.vibe)
 
     # -- the tick --------------------------------------------------------
 
@@ -305,7 +349,7 @@ class Engine:
         self.arc.update(music, dt, self._energy_env.value)
         self._dropped = self.arc.consume_drop()
         if self._dropped:
-            self._flash = 1.0
+            self._flash = self._arc_strength()
         if self.arc.phrase_boundary:
             self._phrases_held += 1
         if SECTION_CHANGE in music.events:
@@ -337,11 +381,22 @@ class Engine:
             return
 
         events = set(music.events)
+        band = self._band()
+        vibe = self.state.vibe
+
+        def usable(name: str) -> bool:
+            return (name in self.looks and self._in_band(name, band)
+                    and (music.tempo_locked or not self.looks[name].needs_tempo))
+
         if self._dropped:
             # Biggest moment in a track: the hit is already lit (see _direct);
             # land in a heavy look, a different one each drop.
-            choices = [n for n in DROP_LOOKS if n in self.looks
-                       and (music.tempo_locked or not self.looks[n].needs_tempo)]
+            choices = [n for n in DROP_LOOKS if usable(n)]
+            if not choices:
+                # A vibe too calm for any of them: land in the liveliest look
+                # it does allow.
+                calm = [n for n in allowed if n not in ("ambient", "hush") and usable(n)]
+                choices = sorted(calm, key=lambda n: -self.looks[n].wildness)[:1]
             if choices:
                 pick(choices[(self.arc.drops - 1) % len(choices)])
             return
@@ -370,13 +425,22 @@ class Engine:
         leaving_idle = sustained > MID_ENERGY and (
             self._active == "ambient"
             or (self._active == "hush" and self.arc.state != BREAKDOWN_STATE))
+        # The vibe stretches the hold at calm and shortens it at wild; and a
+        # look the vibe has since ruled out goes at the next chance rather
+        # than seeing out its hold, so the slider is felt within a phrase.
+        stretch = 2.0 ** (1.0 - 2.0 * vibe)
+        phrases = max(1, round(AUTO_PHRASES * stretch))
+        dwell = AUTO_DWELL_S * stretch
+        ruled_out = (self._active not in ("ambient", "hush")
+                     and not self._in_band(self._active, band))
         if music.tempo_locked:
             due = self.arc.phrase_boundary and (
-                self._phrases_held >= AUTO_PHRASES
-                or (self._section_heard and self._phrases_held >= AUTO_PHRASES // 2))
+                ruled_out
+                or self._phrases_held >= phrases
+                or (self._section_heard and self._phrases_held >= phrases // 2))
         else:
-            forced = SECTION_CHANGE in events and now - self._auto_since > AUTO_DWELL_S / 2
-            due = forced or now - self._auto_since >= AUTO_DWELL_S
+            forced = SECTION_CHANGE in events and now - self._auto_since > dwell / 2
+            due = ruled_out or forced or now - self._auto_since >= dwell
         if not (due or leaving_idle):
             return
 
@@ -385,20 +449,25 @@ class Engine:
         # Each list alternates still and moving looks, so consecutive picks
         # contrast. The tempo-locked moves (rotor, sweep, chase) only appear
         # with a lock, which they need to look intentional.
-        if sustained > BUSY_ENERGY:
+        # The vibe scales how loud the music seems here: x2 at wild, x0.5 calm.
+        energy = sustained * 2.0 ** (2.0 * vibe - 1.0)
+        if energy > BUSY_ENERGY:
             candidates = (["pulse", "rotor", "unison", "pingpong", "knockout", "sweep",
                            "beams", "chase"]
                           if music.tempo_locked
                           else ["pulse", "ripple", "unison", "callresponse", "knockout",
                                 "mirror"])
-        elif sustained > MID_ENERGY:
+        elif energy > MID_ENERGY:
             candidates = (["wash", "ripple", "drift", "stepper", "unison", "callresponse"]
                           if music.tempo_locked
                           else ["wash", "ripple", "drift", "callresponse", "unison",
                                 "sparkle"])
         else:
             candidates = ["wash", "drift", "uv", "ambient"]
-        candidates = [c for c in candidates if c in self.looks]
+        candidates = [c for c in candidates if c in self.looks and self._in_band(c, band)]
+        if len(candidates) < VIBE_MIN_CHOICES:
+            candidates += [n for n in allowed if n not in candidates
+                           and n not in ("ambient", "hush") and usable(n)]
         if not candidates:
             return
         try:
@@ -425,38 +494,44 @@ class Engine:
 
     def _arc_shape(self, emissions: dict[str, Emission]) -> dict[str, Emission]:
         """The build, applied to whatever look is up: PARs lift toward full
-        and wash toward white as it tightens. Before smoothing, so it eases in."""
+        and wash toward white as it tightens. Before smoothing, so it eases in.
+        Scaled by the vibe; see _arc_strength()."""
         mods = self.arc.mods
-        if mods.floor <= 0.0 and mods.desat <= 0.0:
+        k = self._arc_strength()
+        floor, desat = mods.floor * k, mods.desat * k
+        if floor <= 0.0 and desat <= 0.0:
             return emissions
         out = dict(emissions)
         for f in self.patch.group("pars"):
             em = emissions.get(f.fid)
             if em is None:
                 continue
-            out[f.fid] = Emission(mix(em.rgb, WHITE, mods.desat),
-                                  mods.floor + (1.0 - mods.floor) * em.intensity,
+            out[f.fid] = Emission(mix(em.rgb, WHITE, desat),
+                                  floor + (1.0 - floor) * em.intensity,
                                   em.strobe, em.uv, em.emitter_bias)
         return out
 
     def _arc_cut(self, emissions: dict[str, Emission]) -> dict[str, Emission]:
         """The pre-drop gap and the riser. After smoothing, so the PARs cut
         to dark at once instead of fading over the look's release -- the gap
-        is often a single beat. The accent carries the riser in white."""
+        is often a single beat. The accent carries the riser in white. Scaled
+        by the vibe, like the build."""
         mods = self.arc.mods
-        if mods.blackout <= 0.0 and mods.riser <= 0.0:
+        k = self._arc_strength()
+        blackout, riser = mods.blackout * k, mods.riser * k
+        if blackout <= 0.0 and riser <= 0.0:
             return emissions
         out = dict(emissions)
-        keep = 1.0 - mods.blackout
+        keep = 1.0 - blackout
         for f in self.patch.group("pars"):
             em = emissions.get(f.fid, BLACK)
             out[f.fid] = Emission(em.rgb, em.intensity * keep, em.strobe, em.uv,
                                   em.emitter_bias)
         for f in self.patch.group("accent"):
             em = emissions.get(f.fid, BLACK)
-            out[f.fid] = Emission(mix(em.rgb, WHITE, mods.riser),
-                                  max(em.intensity, 0.85 * mods.riser), em.strobe, em.uv,
-                                  max(em.emitter_bias, mods.riser))
+            out[f.fid] = Emission(mix(em.rgb, WHITE, riser),
+                                  max(em.intensity, 0.85 * riser), em.strobe, em.uv,
+                                  max(em.emitter_bias, riser))
         return out
 
     def _drop_hit(self, emissions: dict[str, Emission], pal, dt: float) -> dict[str, Emission]:
@@ -582,6 +657,8 @@ class Engine:
         # already decaying while the smoother rose. Its own decay is the fade.
         emissions = self._drop_hit(emissions, pal, dt)
         emissions = self._arc_cut(emissions)
+        # The host's effects go over the show, arc and all; see effects.py.
+        emissions = self.effects.apply(emissions, music, dt)
 
         # Manual overrides sit above the looks: a fixture the host has taken is
         # not touched by whatever the music is doing.

@@ -15,6 +15,7 @@ from .base import Look
 
 class HushLook(Look):
     name = "hush"
+    wildness = 0.1
     description = "PARs out, blacklight only — for breakdowns"
     #: Output release. Long, so the room sinks into the dark rather than cutting.
     release_s = 1.2

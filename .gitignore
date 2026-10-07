@@ -10,3 +10,6 @@ config/settings.local.yaml
 config/layout.local.json
 # Live tuning saved from the UI
 config/tuning.local.json
+# Listening pass: raw features are large and rebuildable only by replaying
+# the songs, so back them up, but keep them out of git
+songs/frames/

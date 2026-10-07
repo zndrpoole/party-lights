@@ -55,6 +55,7 @@ def _ease(x: float) -> float:
 
 class SwellLook(Look):
     name = "swell"
+    wildness = 0.2
     description = "Full colours held for ages, slow swells and rolls — no hits"
     #: Output release. Short or long because it is the slowest look there is.
     release_s = 0.60
