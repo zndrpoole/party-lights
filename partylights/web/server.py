@@ -502,6 +502,25 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         state.release_raw(data.get("ids"))
         return jsonify({"held": state.active_raw()})
 
+    @app.route("/api/show", methods=["POST"])
+    def api_show():
+        """Where a song with a design card is: {"track": id, "position_s": s}.
+        Starts its show on a new track and keeps the show's clock in step.
+        Post every second or so while it plays; see engine/show.py."""
+        data = request.get_json(silent=True) or {}
+        try:
+            result = engine.show.sync(str(data["track"]), float(data["position_s"]))
+        except (KeyError, TypeError, ValueError) as e:
+            return jsonify({"error": f"need track and position_s ({e})"}), 400
+        except FileNotFoundError as e:
+            return jsonify({"error": f"no design card or map for this track: {e}"}), 404
+        return jsonify({**result, "show": engine.show.snapshot()})
+
+    @app.route("/api/show/stop", methods=["POST"])
+    def api_show_stop():
+        engine.show.stop()
+        return jsonify({"show": None})
+
     @app.route("/api/cue/<path:name>", methods=["POST", "GET"])
     def api_cue(name):
         """Fire a named cue.

@@ -34,6 +34,7 @@ from . import palette as palettes
 from .arc import BREAKDOWN_STATE, BUILDING, PREDROP, ArcDirector
 from .effects import EffectRack
 from .looks import BY_NAME, auto_selectable, build_all
+from .show import ShowRunner
 from .space import Space
 from .state import EngineState
 
@@ -145,6 +146,8 @@ class Engine:
         self.space = Space(patch)
         #: The host's effects -- lightning, candle, heartbeat -- over the top.
         self.effects = EffectRack(patch, self.space)
+        #: A song's designed show, when one is playing. See show.py.
+        self.show = ShowRunner(patch)
         #: Where we are in the song: build, pre-drop, drop, phrase grid.
         self.arc = ArcDirector()
         self.looks = build_all(patch, self.space, self.arc)
@@ -266,6 +269,7 @@ class Engine:
             "fading_from": self._previous if self._fade < 1.0 else None,
             "fade": round(self._fade, 2),
             "effects": self.effects.snapshot(),
+            "show": self.show.snapshot(),
         }
 
     # -- vibe ------------------------------------------------------------
@@ -616,8 +620,17 @@ class Engine:
 
         self._direct(music, dt)
 
-        # Honour the host's choice in manual mode; otherwise let the music pick.
-        if state.mode == "manual":
+        # A designed show picks the look and palette itself. Otherwise honour
+        # the host's choice in manual mode, or let the music pick.
+        plan = self.show.plan(state.vibe)
+        if plan is not None:
+            look, pal, level = plan
+            if look != self._active:
+                self.select(look)
+            # The card has the song's builds and drops; the arc's guesses at
+            # them would land twice.
+            self._flash = 0.0
+        elif state.mode == "manual":
             if state.look != self._active:
                 self.select(state.look)
         else:
@@ -650,13 +663,21 @@ class Engine:
             if self._fade >= 1.0:
                 self._previous = None
 
-        emissions = self._arc_shape(emissions)
-        emissions = self._smooth(emissions, dt)
-        # The drop hit goes after smoothing: through the attack it never
-        # reached full (byte 146 of 255 on the live rig), because it was
-        # already decaying while the smoother rose. Its own decay is the fade.
-        emissions = self._drop_hit(emissions, pal, dt)
-        emissions = self._arc_cut(emissions)
+        if plan is not None:
+            if level < 1.0:
+                emissions = {fid: em.with_intensity(level) for fid, em in emissions.items()}
+            emissions = self._smooth(emissions, dt)
+            # Cues after smoothing, like the arc's cut: a one-beat blackout
+            # must be dark at once, not fading over the look's release.
+            emissions = self.show.shade(emissions, state.vibe, dt, state.max_strobe_seconds)
+        else:
+            emissions = self._arc_shape(emissions)
+            emissions = self._smooth(emissions, dt)
+            # The drop hit goes after smoothing: through the attack it never
+            # reached full (byte 146 of 255 on the live rig), because it was
+            # already decaying while the smoother rose. Its own decay is the fade.
+            emissions = self._drop_hit(emissions, pal, dt)
+            emissions = self._arc_cut(emissions)
         # The host's effects go over the show, arc and all; see effects.py.
         emissions = self.effects.apply(emissions, music, dt)
 
