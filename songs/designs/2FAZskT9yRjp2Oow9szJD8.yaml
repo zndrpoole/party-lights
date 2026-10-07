@@ -1,0 +1,79 @@
+# Design card — The Days (NOTION Remix), Chrystal & NOTION
+# Map: songs/maps/2FAZskT9yRjp2Oow9szJD8.json  (138 BPM, 1 bar = 1.74 s)
+# Draft 1, 2026-10-07. Checked by ear: tempo, both stops, both drops.
+#
+# Story: cold and pale until the first drop, then hard club punches. The second
+# half goes bigger than the first, and the song ends on one white hit.
+
+schema: 1
+track: 2FAZskT9yRjp2Oow9szJD8
+map_quality: 0.42          # downbeats were flagged uncertain, but the bar count checked out by ear
+
+# Colours. The album art is pastel ice-blue and lavender, which reads as plain
+# white on RGB PARs, so these are pushed to saturated versions. White is kept
+# back for the builds and drops; the verses never use it.
+palette:
+  name: the-days
+  colors:
+    - {hsv: [0.56, 0.80, 1.0], note: ice blue}
+    - {hsv: [0.76, 0.65, 1.0], note: lavender}
+    - {hsv: [0.66, 1.00, 1.0], note: deep blue}
+  accent: uv               # the accent fixture's UV, for the stops and the breakdown
+  fallback: ice            # nearest stock palette, if a custom one isn't possible
+
+# How intense the song is by default (0 calm .. 1 wild, where 0.5 is today's
+# auto mode). With the host slider in the middle, it plays as written. Moving
+# the slider shifts this baseline; below 0.4 every look swaps for its `calm:` one.
+vibe: 0.75
+
+# Looks, one per section of the map. `at` is song time from the map; the live
+# engine snaps each to the section boundary it matches.
+sections:
+  - {at: "0:03.06", role: intro,     look: drift,   level: 0.30, note: "intro step 1 — near-dark, slow ice-blue clouds"}
+  - {at: "0:10.02", role: intro,     look: drift,   level: 0.45, note: "step 2 — brighter"}
+  - {at: "0:16.98", role: intro,     look: wash,    level: 0.60, note: "step 3 — wash starts following the mix"}
+  - {at: "0:23.94", role: intro,     look: sweep,   level: 0.75, note: "step 4 — one wave a bar, sets up the groove"}
+  - {at: "0:30.91", role: verse,     look: pulse,    calm: wash,   note: "groove lands: halves alternate on the kick"}
+  - {at: "0:51.78", role: verse,     look: callresponse, calm: wash, note: "12 bars in: left answers kick, right the snare, to keep it moving"}
+  - {at: "1:13.00", role: build,     look: stepper,  calm: sweep,  note: "build 1 (see the cues)"}
+  - {at: "1:20.03", role: drop,      look: knockout, calm: unison, note: "DROP 1: room full on, every kick cuts it dark"}
+  - {at: "1:27.00", role: verse,     look: beams,    calm: pulse,  note: "post-drop groove"}
+  - {at: "1:40.91", role: chorus,    look: mirror,   calm: wash,   note: "chorus 1: bursts from the centre, lavender leads"}
+  - {at: "2:08.75", role: verse,     look: pulse,    calm: wash,   note: "back to the groove look, so the second half can grow"}
+  - {at: "2:43.40", role: breakdown, look: hush,     note: "breakdown: PARs out, UV only"}
+  - {at: "2:50.43", role: build,     look: stepper,  calm: sweep,  note: "build 2"}
+  - {at: "2:57.41", role: drop,      look: knockout, calm: unison, note: "DROP 2"}
+  - {at: "3:04.39", role: verse,     look: ripple,   calm: pulse,  note: "a new look, so the second half doesn't just repeat the first"}
+  - {at: "3:18.30", role: chorus,    look: rotor,    calm: mirror, note: "last chorus: the biggest look in the song"}
+  - {at: "3:46.21", role: outro,     look: wash,     level: 0.50,  note: "outro: settle, ice blue"}
+
+# Timed cues, scheduled ahead of time and fired on the exact frame. They play
+# on top of the section looks.
+cues:
+  # --- first half ---
+  - {at: "1:11.36", until: "1:12.55", do: blackout, note: "the stop: total black for exactly as long as the silence"}
+  - {at: "1:13.06", do: flash, color: white, note: "the hit that opens the build"}
+  - {at: "1:13.06", until: "1:20.03", do: build,
+     rate: "1/2 → 1/16 notes", whiten: 0.0 → 0.8, level: 0.5 → 1.0,
+     note: "stepper speeds up, colours wash toward white, brightness climbs"}
+  - {at: "1:19.60", until: "1:20.03", do: blackout, note: "a quarter beat of dark just before the drop, so it lands harder"}
+  - {at: "1:20.03", do: flash, color: white, fixtures: all, note: "DROP 1: everything on the one"}
+
+  # --- second half: same shape, bigger ---
+  - {at: "2:43.40", do: fade, to: hush, over: 1 bar}
+  - {at: "2:48.75", until: "2:49.94", do: blackout, uv: off, note: "the stop: even the UV goes out this time"}
+  - {at: "2:50.46", do: flash, color: white}
+  - {at: "2:50.46", until: "2:57.41", do: build,
+     rate: "1/2 → 1/16 notes", whiten: 0.0 → 1.0, level: 0.5 → 1.0}
+  - {at: "2:56.98", until: "2:57.41", do: blackout}
+  - {at: "2:57.41", do: flash, color: white, fixtures: all}
+  - {at: "2:57.41", until: "2:59.15", do: strobe, vibe_min: 0.6,
+     note: "DROP 2 is bigger: one bar of white strobe, skipped when the vibe is low"}
+
+  # --- ending ---
+  - {at: "3:51.72", do: flash, color: white, fixtures: all, note: "final hit"}
+  - {at: "3:51.80", do: fade, to: black, over: 1.4 s, note: "fade out with the ring, then the next song takes over"}
+
+# For the live engine, if it loses its place in the song: drop the timed cues,
+# keep the palette, and let auto mode react at this song's vibe.
+on_lost_lock: auto_in_palette
