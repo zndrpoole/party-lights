@@ -3,8 +3,7 @@
 The jukebox (../juke-box) already knows things we would otherwise have to infer
 from audio: exactly when a track changes, what it is, who requested it, and
 whether the queue has run dry. A track boundary in particular is a free, exact
-cue point, and it is the best moment in the whole evening to change palette --
-the room already expects something to happen.
+cue point for resetting the music analysis.
 
 This is strictly a *bonus* input. Every failure path degrades to "no metadata,
 keep reacting to the audio", because the lights must not stop when the jukebox
@@ -44,8 +43,7 @@ class JukeboxClient:
     """Background poller with a track-change callback.
 
     `on_track_change(TrackInfo)` fires once per new track, on the poller thread.
-    Keep the callback quick; the engine's handler only resets analysis state and
-    rotates the palette.
+    Keep the callback quick; the engine's handler only resets analysis state.
     """
 
     def __init__(
@@ -71,7 +69,7 @@ class JukeboxClient:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         # Deliberately starts unset rather than empty-string, so the first
-        # observed track counts as a change and gets its palette.
+        # observed track counts as a change.
         self._last_track_id: str | None = None
 
     # -- polling ----------------------------------------------------------

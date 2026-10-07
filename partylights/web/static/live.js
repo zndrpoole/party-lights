@@ -53,6 +53,7 @@ function apply(s) {
     "dot " + (s.dmx.fps > s.dmx.target_fps * 0.9 ? "ok" : "bad");
   $("s-look").textContent = s.engine.look;
   $("s-mode").textContent = s.state.mode;
+  $("s-palette-auto").textContent = s.state.palette_auto ? "auto" : "manual";
 
   const m = s.music;
   $("s-bpm").textContent = m.available && m.bpm > 0 ? m.bpm.toFixed(0) : "—";

@@ -65,7 +65,7 @@ def cmd_rig(args) -> int:
 def cmd_cues(args) -> int:
     print("Cues (POST or GET /api/cue/<name>):\n")
     for name in ("blackout", "freeze", "mode", "next-look", "palette",
-                 "master-up", "master-down", "clear-manual", "resume-auto"):
+                 "palette-auto", "master-up", "master-down", "clear-manual", "resume-auto"):
         print(f"  {name}")
     print("\nLooks (as look/<name>):")
     for name, cls in LOOKS_BY_NAME.items():
@@ -120,6 +120,7 @@ def cmd_run(args) -> int:
     state = EngineState(
         look=settings.get("engine.start_look", "ambient"),
         palette=settings.get("engine.palette", "halloween"),
+        palette_auto=bool(settings.get("engine.palette_auto", False)),
         max_strobe_seconds=float(settings.get("engine.max_strobe_seconds", 4.0)),
     )
 

@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 
 from ..fixtures.color import Emission, Rgb, clamp
+from . import palette as palettes
 
 #: Highest dimmer floor the UI may set. The PARs held their hue from 15 up, so
 #: anything far above that only removes the bottom of every fade.
@@ -46,6 +47,8 @@ class EngineState:
         *,
         look: str = "ambient",
         palette: str = "halloween",
+        palette_auto: bool = False,
+        palette_pool=None,
         max_strobe_seconds: float = 4.0,
     ):
         self._lock = threading.RLock()
@@ -55,6 +58,14 @@ class EngineState:
         self.mode = "auto"
         self.look = look
         self.palette = palette
+        #: When on, each new song shuffles to another palette from the pool.
+        #: Independent of `mode`: looks and palettes are pinned separately.
+        self.palette_auto = bool(palette_auto)
+        #: Palettes eligible for auto switching and the next-palette cue, in
+        #: PALETTES order. Never empty.
+        self.palette_pool: list[str] = list(palettes.DEFAULT_POOL)
+        if palette_pool is not None:
+            self.set_pool(palette_pool)
         self.master = 1.0
         #: Sharp (-1) to smooth (+1); 0 is the tuning as written. See
         #: softness_scale().
@@ -87,6 +98,8 @@ class EngineState:
                 "mode": self.mode,
                 "look": self.look,
                 "palette": self.palette,
+                "palette_auto": self.palette_auto,
+                "palette_pool": list(self.palette_pool),
                 "master": round(self.master, 3),
                 "softness": round(self.softness, 3),
                 "dimmer_floor": self.dimmer_floor,
@@ -121,6 +134,39 @@ class EngineState:
     def set_palette(self, name: str) -> None:
         with self._lock:
             self.palette = name
+
+    def set_palette_auto(self, on: bool) -> None:
+        with self._lock:
+            self.palette_auto = bool(on)
+
+    def toggle_palette_auto(self) -> bool:
+        with self._lock:
+            self.palette_auto = not self.palette_auto
+            return self.palette_auto
+
+    def set_pool_member(self, name: str, active: bool) -> list[str]:
+        """Add a palette to the pool or remove it. The last one cannot go:
+        an empty pool would leave auto switching nothing to switch to."""
+        if name not in palettes.BY_NAME:
+            raise KeyError(f"unknown palette {name!r}")
+        with self._lock:
+            pool = set(self.palette_pool)
+            if active:
+                pool.add(name)
+            elif pool == {name}:
+                raise ValueError("the palette pool cannot be empty")
+            else:
+                pool.discard(name)
+            self.palette_pool = [n for n in palettes.names() if n in pool]
+            return list(self.palette_pool)
+
+    def set_pool(self, names) -> None:
+        """Replace the pool, e.g. from a saved file. Unknown names are dropped,
+        and a pool left empty falls back to the default."""
+        pool = {n for n in names if n in palettes.BY_NAME}
+        with self._lock:
+            self.palette_pool = ([n for n in palettes.names() if n in pool]
+                                 or list(palettes.DEFAULT_POOL))
 
     def set_master(self, value: float) -> None:
         with self._lock:

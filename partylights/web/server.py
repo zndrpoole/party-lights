@@ -106,10 +106,11 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
                 for c in LOOKS
             ],
             "palettes": [
-                {"name": p.name, "description": p.description,
+                {"name": p.name, "description": p.description, "theme": p.theme,
                  "colors": [[round(c, 4) for c in rgb] for rgb in p.colors]}
                 for p in palettes.PALETTES
             ],
+            "palette_themes": [{"name": n, "label": label} for n, label in palettes.THEMES],
             "cues": cues.available(),
             "presets": [
                 {"name": name, "look": look, "palette": pal, "description": desc}
@@ -186,13 +187,19 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
 
     def save_tuning() -> None:
         write_json(tuning_file, {"softness": state.softness,
-                                 "dimmer_floor": state.dimmer_floor})
+                                 "dimmer_floor": state.dimmer_floor,
+                                 "palette_auto": state.palette_auto,
+                                 "palette_pool": list(state.palette_pool)})
 
     # Restore the last tuning, so a restart does not undo the night's work.
     try:
         saved = json.loads(tuning_file.read_text())
         state.set_softness(float(saved.get("softness", 0.0)))
         state.set_dimmer_floor(int(saved.get("dimmer_floor", 0)))
+        if "palette_auto" in saved:
+            state.set_palette_auto(bool(saved["palette_auto"]))
+        if isinstance(saved.get("palette_pool"), list):
+            state.set_pool(saved["palette_pool"])
     except FileNotFoundError:
         pass
     except (OSError, ValueError, TypeError, AttributeError):
@@ -366,6 +373,32 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         except KeyError as e:
             return jsonify({"error": str(e)}), 400
 
+    @app.route("/api/palette/pool", methods=["POST"])
+    def api_palette_pool():
+        """Add a palette to the auto-switching pool or remove it. Saved."""
+        data = request.get_json(silent=True) or {}
+        try:
+            pool = state.set_pool_member(data.get("palette", ""),
+                                         bool(data.get("active", True)))
+        except KeyError as e:
+            return jsonify({"error": str(e)}), 400
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        save_tuning()
+        return jsonify({"palette_pool": pool})
+
+    @app.route("/api/palette/auto", methods=["POST"])
+    def api_palette_auto():
+        """Palette switching on song change: on, off, or toggle when
+        `auto` is left out. Saved."""
+        data = request.get_json(silent=True) or {}
+        if "auto" in data:
+            state.set_palette_auto(bool(data["auto"]))
+        else:
+            state.toggle_palette_auto()
+        save_tuning()
+        return jsonify({"palette_auto": state.palette_auto})
+
     @app.route("/api/master", methods=["POST"])
     def api_master():
         data = request.get_json(silent=True) or {}
@@ -459,7 +492,10 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         "open this URL" action works without any plugin or scripting.
         """
         try:
-            return jsonify(cues.fire(name))
+            result = cues.fire(name)
+            if name == "palette-auto":
+                save_tuning()
+            return jsonify(result)
         except KeyError as e:
             return jsonify({"error": str(e), "available": cues.available()}), 404
         except Exception as e:

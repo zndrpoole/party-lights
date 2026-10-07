@@ -65,9 +65,28 @@ async function loadRig() {
     presets.appendChild(b);
   });
 
-  const pals = $("palettes");
-  pals.innerHTML = "";
+  // Each palette is built once and moved between Active and its theme's
+  // Inactive group as the pool changes; see placePalettes().
+  const inactive = $("pal-inactive");
+  inactive.innerHTML = "";
+  palThemeRows = {};
+  rig.palette_themes.forEach((th) => {
+    const block = document.createElement("div");
+    block.className = "pal-theme";
+    block.innerHTML = `<div class="pal-theme-label">${th.label}</div>`;
+    const row = document.createElement("div");
+    row.className = "row";
+    block.appendChild(row);
+    inactive.appendChild(block);
+    palThemeRows[th.name] = row;
+  });
+  palEls = [];
+  palPoolKey = null;
   rig.palettes.forEach((p) => {
+    const group = document.createElement("span");
+    group.className = "pal";
+    group.dataset.pool = p.name;
+    group.dataset.theme = p.theme;
     const b = document.createElement("button");
     b.dataset.palette = p.name;
     b.title = p.description;
@@ -77,7 +96,12 @@ async function loadRig() {
         `<i style="width:11px;height:11px;border-radius:50%;display:inline-block;background:${rgbToHex(c)}"></i>`
       ).join("") + `</span>${p.name}`;
     b.onclick = () => post("/api/palette", { palette: p.name });
-    pals.appendChild(b);
+    const t = document.createElement("button");
+    t.className = "pool";
+    t.onclick = () => post("/api/palette/pool",
+      { palette: p.name, active: !group.classList.contains("in") });
+    group.append(b, t);
+    palEls.push(group);
   });
 
   const bands = $("bands");
@@ -147,6 +171,34 @@ async function loadRig() {
   });
 }
 
+/* -- palette sections ------------------------------------------------ */
+
+let palEls = [];
+let palThemeRows = {};
+let palPoolKey = null;
+
+// File every palette under Active or its theme in Inactive, in catalog order.
+// Only re-files when the pool actually changes, so the 20 Hz state updates
+// do not churn the DOM (or steal focus from a button mid-press).
+function placePalettes(pool) {
+  const key = pool.join(",");
+  if (key === palPoolKey) return;
+  palPoolKey = key;
+  const active = new Set(pool);
+  palEls.forEach((g) => {
+    const name = g.dataset.pool;
+    const inPool = active.has(name);
+    g.classList.toggle("in", inPool);
+    const t = g.querySelector(".pool");
+    t.textContent = inPool ? "\u00d7" : "+";
+    t.title = inPool ? `Make ${name} inactive` : `Make ${name} active`;
+    t.setAttribute("aria-label", t.title);
+    (inPool ? $("pal-active") : palThemeRows[g.dataset.theme] || palThemeRows.misc).appendChild(g);
+  });
+  document.querySelectorAll(".pal-theme").forEach((b) =>
+    b.hidden = !b.querySelector(".pal"));
+}
+
 /* -- apply live state ------------------------------------------------ */
 
 let lastHits = {};
@@ -182,6 +234,10 @@ function apply(s) {
     b.classList.toggle("on", b.dataset.look === s.engine.look));
   document.querySelectorAll("[data-palette]").forEach((b) =>
     b.classList.toggle("on", b.dataset.palette === st.palette));
+  placePalettes(st.palette_pool);
+  $("s-palette-auto").textContent = st.palette_auto ? "auto" : "manual";
+  // Lit when manual, like the look Mode button: orange means "the host is driving".
+  $("b-palette-auto").classList.toggle("on", !st.palette_auto);
   document.querySelectorAll("[data-preset]").forEach((b) =>
     b.classList.toggle("on", b.dataset.presetLook === s.engine.look &&
                              b.dataset.presetPalette === st.palette));
@@ -265,6 +321,7 @@ function apply(s) {
 /* -- wire up --------------------------------------------------------- */
 
 $("b-mode").onclick = () => post("/api/mode", {});
+$("b-palette-auto").onclick = () => post("/api/palette/auto", {});
 $("b-blackout").onclick = () => post("/api/cue/blackout");
 $("b-freeze").onclick = () => post("/api/cue/freeze");
 $("b-resume").onclick = () => post("/api/cue/resume-auto");

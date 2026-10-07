@@ -1,5 +1,32 @@
 # party-lights
 
+## Quick start: try it without any hardware
+
+You need [Python 3.13](https://www.python.org/downloads/) and git. Then, in a
+terminal:
+
+```bash
+git clone https://github.com/zndrpoole/party-lights.git
+cd party-lights
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python tools/make_test_audio.py demo-audio
+./.venv/bin/python -m partylights.cli run --driver null --no-jukebox --audio-file demo-audio/edm_arc_128.wav
+```
+
+Leave that running and open these in your browser:
+
+- **http://localhost:5055/viz** — watch the lights react to the music
+- **http://localhost:5055/** — the main control panel
+- **http://localhost:5055/live** — the big cue buttons
+
+The demo track is silent; you won't hear anything, but the lights respond to it.
+Press **Ctrl+C** in the terminal to stop.
+
+Next time, you only need the last command (from inside the `party-lights` folder).
+
+---
+
 Music-reactive DMX lighting for the [party jukebox](../juke-box). Analyses the
 audio coming out of the host Mac, reads track context from the jukebox, and
 drives 13 DMX fixtures in time with the music — with manual override from a

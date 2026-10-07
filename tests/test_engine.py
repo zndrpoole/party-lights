@@ -645,15 +645,68 @@ def test_manual_mode_does_not_get_overridden_by_auto_selection(rig):
     assert engine.active_look == "uv"
 
 
-def test_track_change_resets_analysis_and_rotates_palette(rig):
+def test_track_change_resets_analysis_and_keeps_palette_when_manual(rig):
+    """With palette switching on manual, a new song must not change it."""
     _, _, state, engine, _ = rig
+    assert not state.palette_auto
     drive(engine, render(128.0, bars=8)[0])
     assert engine.analyser.tempo.bpm > 0
     before = state.palette
     engine.on_track_change("Song", "Artist")
     assert engine.analyser.tempo.bpm == 0.0
-    assert state.palette != before
+    assert state.palette == before
     assert state.track_title == "Song"
+
+
+def test_auto_palette_shuffles_within_the_pool_without_repeats(rig):
+    _, _, state, engine, _ = rig
+    state.set_pool(["warm", "cool", "neon"])
+    state.set_palette("warm")
+    state.set_palette_auto(True)
+    seen = set()
+    for _ in range(30):
+        before = state.palette
+        engine.on_track_change()
+        assert state.palette in {"warm", "cool", "neon"}
+        assert state.palette != before
+        seen.add(state.palette)
+    assert seen == {"warm", "cool", "neon"}
+
+
+def test_auto_palette_with_a_single_palette_pool_holds_it(rig):
+    _, _, state, engine, _ = rig
+    state.set_pool(["fire"])
+    state.set_palette("cool")
+    state.set_palette_auto(True)
+    engine.on_track_change()
+    assert state.palette == "fire"
+    engine.on_track_change()
+    assert state.palette == "fire"
+
+
+def test_pool_cannot_be_emptied_and_drops_unknown_names():
+    state = EngineState()
+    state.set_pool(["cool", "nope"])
+    assert state.palette_pool == ["cool"]
+    with pytest.raises(ValueError):
+        state.set_pool_member("cool", False)
+    with pytest.raises(KeyError):
+        state.set_pool_member("nope", True)
+    state.set_pool(["nope"])
+    assert state.palette_pool == list(palettes.DEFAULT_POOL)
+    assert "mono-white" not in state.palette_pool
+
+
+def test_next_palette_cue_cycles_only_the_pool(rig):
+    _, _, state, _, cues = rig
+    state.set_pool(["warm", "neon"])
+    state.set_palette("halloween")    # not in the pool
+    assert cues.fire("palette") == {"palette": "warm"}
+    assert cues.fire("palette") == {"palette": "neon"}
+    assert cues.fire("palette") == {"palette": "warm"}
+    # Picking by name still reaches any palette, and leaves switching alone.
+    assert cues.fire("palette/mono-white") == {"palette": "mono-white"}
+    assert cues.fire("palette-auto") == {"palette_auto": True}
 
 
 # -- strobe safety ----------------------------------------------------------

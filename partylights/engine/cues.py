@@ -78,17 +78,23 @@ class CueRouter:
         return {"look": name, "mode": "manual"}
 
     def palette(self, name: str | None = None) -> dict:
-        names = palettes.names()
+        """Pick a palette by name, or with no name step to the next one in the
+        active pool. Never touches palette auto switching."""
         if name is None:
+            pool = list(self.state.palette_pool)
             try:
-                idx = names.index(self.state.palette)
+                idx = pool.index(self.state.palette)
             except ValueError:
                 idx = -1
-            name = names[(idx + 1) % len(names)]
-        elif name not in names:
+            name = pool[(idx + 1) % len(pool)]
+        elif name not in palettes.BY_NAME:
             raise KeyError(f"unknown palette {name!r}")
         self.state.set_palette(name)
         return {"palette": name}
+
+    def palette_auto(self) -> dict:
+        """Toggle shuffling the palette on each song change."""
+        return {"palette_auto": self.state.toggle_palette_auto()}
 
     def preset(self, name: str) -> dict:
         if name not in PRESETS:
@@ -131,6 +137,7 @@ class CueRouter:
             "mode": self.mode,
             "next-look": self.next_look,
             "palette": self.palette,
+            "palette-auto": self.palette_auto,
             "master-up": self.master_up,
             "master-down": self.master_down,
             "clear-manual": self.clear_manual,
@@ -161,7 +168,7 @@ class CueRouter:
 
     def available(self) -> list[str]:
         return [
-            "blackout", "freeze", "mode", "next-look", "palette",
+            "blackout", "freeze", "mode", "next-look", "palette", "palette-auto",
             "master-up", "master-down", "clear-manual", "resume-auto",
             *(f"look/{n}" for n in LOOKS_BY_NAME),
             *(f"palette/{n}" for n in palettes.names()),

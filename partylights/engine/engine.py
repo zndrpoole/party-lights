@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 import threading
 import time
 from dataclasses import replace
@@ -177,22 +178,22 @@ class Engine:
     def on_track_change(self, title: str = "", artist: str = "") -> None:
         """A new song started.
 
-        A track boundary is the one cue point we get for free, and it is the
-        best possible moment for a palette change: the room already expects
-        something to happen.
+        Resets analysis for the new track. If the host has turned on palette
+        auto switching, this is also when the palette changes -- a track
+        boundary is the one moment the room already expects something to
+        happen. The pick is shuffled from the active pool, never repeating
+        the palette just played. With switching off the palette is left alone.
         """
         self.analyser.on_track_change()
         self.arc.reset()
         self.state.track_title = title
         self.state.track_artist = artist
-        names = palettes.names()
-        if names:
-            try:
-                idx = names.index(self.state.palette)
-            except ValueError:
-                idx = -1
-            self.state.set_palette(names[(idx + 1) % len(names)])
-        log.info("Track change: %s — %s (palette now %s)",
+        if self.state.palette_auto:
+            pool = list(self.state.palette_pool)
+            choices = [n for n in pool if n != self.state.palette] or pool
+            if choices:
+                self.state.set_palette(random.choice(choices))
+        log.info("Track change: %s — %s (palette %s)",
                  artist or "?", title or "?", self.state.palette)
 
     def set_layout(self, layout: dict) -> None:

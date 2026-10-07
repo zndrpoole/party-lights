@@ -139,3 +139,48 @@ def test_dimmer_floor_is_saved_with_softness(patch, tmp_path):
     restarted = EngineState()
     make(restarted)
     assert restarted.dimmer_floor == 15 and restarted.softness == 0.5
+
+
+def test_palette_pool_and_auto_are_saved_and_restored(patch, tmp_path):
+    from partylights.engine.state import EngineState
+    tuning = tmp_path / "tuning.json"
+    make = lambda st: create_app(patch=patch, universe=Universe(NullDriver()), state=st,
+                                 engine=None, cues=None, layout_path=tmp_path / "l.json",
+                                 tuning_path=tuning).test_client()
+    client = make(EngineState())
+    out = client.post("/api/palette/pool", json={"palette": "warm", "active": False})
+    assert "warm" not in out.get_json()["palette_pool"]
+    assert client.post("/api/palette/pool", json={"palette": "mono-white",
+                                                  "active": True}).status_code == 200
+    assert client.post("/api/palette/pool", json={"palette": "nope"}).status_code == 400
+    assert client.post("/api/palette/auto", json={}).get_json() == {"palette_auto": True}
+    restarted = EngineState()
+    make(restarted)
+    assert restarted.palette_auto
+    assert "warm" not in restarted.palette_pool
+    assert "mono-white" in restarted.palette_pool
+
+
+def test_palette_pool_refuses_to_empty(patch, tmp_path):
+    from partylights.engine.state import EngineState
+    state = EngineState(palette_pool=["cool"])
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=state,
+                        engine=None, cues=None, layout_path=tmp_path / "l.json",
+                        tuning_path=tmp_path / "t.json").test_client()
+    resp = client.post("/api/palette/pool", json={"palette": "cool", "active": False})
+    assert resp.status_code == 400
+    assert state.palette_pool == ["cool"]
+
+
+def test_rig_lists_every_palette_under_a_known_theme(patch, tmp_path):
+    from partylights.engine.cues import CueRouter
+    from partylights.engine.state import EngineState
+    universe, state = Universe(NullDriver()), EngineState()
+    client = create_app(patch=patch, universe=universe, state=state, engine=None,
+                        cues=CueRouter(None, universe, state),
+                        layout_path=tmp_path / "l.json",
+                        tuning_path=tmp_path / "t.json").test_client()
+    rig = client.get("/api/rig").get_json()
+    themes = [t["name"] for t in rig["palette_themes"]]
+    assert themes == ["halloween", "party", "club", "functional", "misc"]
+    assert all(p["theme"] in themes for p in rig["palettes"])

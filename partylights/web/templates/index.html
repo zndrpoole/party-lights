@@ -63,7 +63,15 @@
 
 <div class="panel">
   <h2>Palette</h2>
-  <div class="row" id="palettes"></div>
+  <div class="row" style="margin-bottom:12px">
+    <button id="b-palette-auto" class="wide">On song change: <b id="s-palette-auto">manual</b></button>
+  </div>
+  <div class="pal-head">Active</div>
+  <div class="row" id="pal-active"></div>
+  <div class="pal-head">Inactive</div>
+  <div id="pal-inactive"></div>
+  <div class="note">Auto shuffles between the active palettes on each new song. + makes a palette
+    active, &times; puts it back; clicking a palette uses it now, active or not.</div>
 </div>
 
 <div class="panel">
