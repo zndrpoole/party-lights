@@ -77,6 +77,25 @@ YARD_FIELDS = {
     "ax": (-60.0, 60.0), "ay": (-60.0, 60.0), "ah": (0.0, 15.0),
     "beam": (4.0, 120.0), "throw": (1.0, 60.0),
 }
+#: Per-tree size multiplier range and the lowest crown opacity /yard allows.
+YARD_TREE_SCALE = (0.2, 1.5)
+YARD_TREE_OPACITY = (0.1, 1.0)
+YARD_MAX_TREES = 64
+
+
+def _clean_trees(spec) -> dict:
+    """Validate /yard's tree settings: {opacity, items: [{hidden, scale}]}."""
+    if not isinstance(spec, dict) or not isinstance(spec.get("items", []), list):
+        raise ValueError("trees must be {opacity, items: [{hidden, scale}]}")
+    lo, hi = YARD_TREE_OPACITY
+    out = {"opacity": round(min(max(float(spec.get("opacity", 1.0)), lo), hi), 3), "items": []}
+    lo, hi = YARD_TREE_SCALE
+    for item in spec.get("items", [])[:YARD_MAX_TREES]:
+        if not isinstance(item, dict):
+            raise ValueError("each tree must be {hidden, scale}")
+        out["items"].append({"hidden": bool(item.get("hidden", False)),
+                             "scale": round(min(max(float(item.get("scale", 1.0)), lo), hi), 3)})
+    return out
 
 
 def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=None,
@@ -362,12 +381,19 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         """Save where each fixture is mounted in the yard model and where it aims.
 
         Only the geometry lives here. Colour and level always come from the
-        wire, so the model cannot drift from what the rig is doing.
+        wire, so the model cannot drift from what the rig is doing. The
+        reserved key "trees" holds which trees are hidden, their size and how
+        see-through they are.
         """
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"error": "expected {fixture_id: {x, y, h, ax, ay, ah, beam, throw}}"}), 400
         yard = {}
+        if "trees" in data:
+            try:
+                yard["trees"] = _clean_trees(data["trees"])
+            except (TypeError, ValueError) as e:
+                return jsonify({"error": str(e)}), 400
         for fid, spec in data.items():
             if fid not in patch.by_id:
                 continue

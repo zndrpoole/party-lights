@@ -127,6 +127,20 @@ def test_yard_placement_round_trips_clamped_and_drops_unknown_fixtures(patch, tm
     assert client.get("/yard").status_code == 200
 
 
+def test_yard_tree_settings_are_clamped_and_saved(patch, tmp_path):
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
+                        cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    trees = {"opacity": 0, "items": [{"hidden": True, "scale": 1}, {"scale": 9}, {}]}
+    saved = client.post("/api/yard", json={"trees": trees}).get_json()
+    assert saved == {"trees": {"opacity": 0.1, "items": [{"hidden": True, "scale": 1.0},
+                                                         {"hidden": False, "scale": 1.5},
+                                                         {"hidden": False, "scale": 1.0}]}}
+    assert client.get("/api/yard").get_json() == saved
+    assert client.post("/api/yard", json={"trees": {"items": "all"}}).status_code == 400
+    assert client.post("/api/yard", json={"trees": {"items": [{"scale": "big"}]}}).status_code == 400
+
+
 def test_softness_is_saved_and_restored_across_restarts(patch, tmp_path):
     from partylights.engine.state import EngineState
     tuning = tmp_path / "tuning.json"

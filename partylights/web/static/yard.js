@@ -85,6 +85,7 @@ let pickMode = null;
 let mode = "live";      // "live" | "preview"
 let showBeams = true;
 let latest = {};        // fid -> decoded fixture from the last wire frame
+let showLabels = true;
 
 /* -- geometry helpers ------------------------------------------------------- */
 
@@ -222,20 +223,45 @@ scene.add(nbG);
 const nbM = mat(0x7f8388, .95);
 D.nb.forEach((n) => { const m = extrude(n.p, n.h, nbM); nbG.add(m); pick.push(m); });
 
+// Trees can be hidden, resized and made see-through, since the LiDAR is from
+// 2020-21 and a crown can hide the very light being placed under it.
 const treeG = new THREE.Group();
 scene.add(treeG);
 const leaf = mat(0x2f5d34, .95), bark = mat(0x4b3a2c, 1);
-D.trees.forEach(([x, y, rad, h]) => {
-  const r = Math.min(rad, 6.5);
+const TREE_MIN = 0.2, TREE_MAX = 1.5, OPACITY_MIN = 0.1;
+let treeOpacity = 1;
+const trees = D.trees.map(([x, y, rad, h], i) => {
   const trunk = new THREE.Mesh(new THREE.CylinderGeometry(.22, .32, 2.6, 8), bark);
-  trunk.position.set(x, 1.3, -y); trunk.castShadow = true;
-  treeG.add(trunk);
+  trunk.castShadow = true;
   const crown = new THREE.Mesh(new THREE.SphereGeometry(1, 22, 16), leaf);
-  crown.scale.set(r, (h - 2) / 2, r);
-  crown.position.set(x, (h + 2) / 2, -y);
-  crown.castShadow = crown.receiveShadow = true;
-  treeG.add(crown); pick.push(crown);
+  crown.receiveShadow = true;
+  const tag = makeTag(`T${i + 1}`, "#9fd7a8");
+  treeG.add(trunk, crown, tag);
+  pick.push(crown);
+  return { x, y, r: Math.min(rad, 6.5), h, trunk, crown, tag, hidden: false, scale: 1 };
 });
+
+function shapeTree(t) {
+  const s = t.scale, h = t.h * s;
+  t.trunk.scale.set(1, s, 1);
+  t.trunk.position.set(t.x, 1.3 * s, -t.y);
+  t.crown.scale.set(t.r * s, (h - 2 * s) / 2, t.r * s);
+  t.crown.position.set(t.x, (h + 2 * s) / 2, -t.y);
+  t.tag.position.set(t.x, h + .6, -t.y);
+  [t.trunk, t.crown, t.tag].forEach((o) => { o.visible = !t.hidden; });
+  if (!showLabels) t.tag.visible = false;
+}
+
+function setTreeOpacity(v) {
+  treeOpacity = Math.min(Math.max(v, OPACITY_MIN), 1);
+  const solid = treeOpacity >= 0.99;
+  if (leaf.transparent === solid) leaf.needsUpdate = true;
+  leaf.transparent = !solid;
+  leaf.opacity = treeOpacity;
+  leaf.depthWrite = solid;
+  // A see-through crown should not block light either.
+  trees.forEach((t) => { t.crown.castShadow = solid; });
+}
 
 const amb = new THREE.AmbientLight(0x2a3b57, .35);
 const hemi = new THREE.HemisphereLight(0x3a4a6a, 0x0a0a0a, .2);
@@ -269,13 +295,13 @@ scene.add(aimDot, aimLine);
 
 // A short label floating above each fixture, so the patch order can be read
 // off the model (chases run in that order).
-function makeTag(text) {
+function makeTag(text, color = "#e8eaf0") {
   const c = document.createElement("canvas");
   c.width = 128; c.height = 64;
   const g = c.getContext("2d");
   g.fillStyle = "rgba(8,13,19,.8)";
   g.fillRect(14, 10, 100, 44);
-  g.fillStyle = "#e8eaf0";
+  g.fillStyle = color;
   g.font = "600 30px ui-monospace, Menlo, monospace";
   g.textAlign = "center"; g.textBaseline = "middle";
   g.fillText(text, 64, 33);
@@ -510,7 +536,7 @@ function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const r = await post("/api/yard", placement());
+      const r = await post("/api/yard", { ...placement(), trees: treeSettings() });
       $("s-saved").textContent = r.ok ? "Placement saved." : "Save failed.";
     } catch {
       $("s-saved").textContent = "Save failed: is the app running?";
@@ -560,6 +586,67 @@ $("b-stage").onclick = async () => {
   }
 };
 
+/* -- trees ------------------------------------------------------------------ */
+
+function treeSettings() {
+  return { opacity: +treeOpacity.toFixed(2),
+           items: trees.map((t) => ({ hidden: t.hidden, scale: +t.scale.toFixed(2) })) };
+}
+
+function applyTreeSettings(saved) {
+  const items = (saved && Array.isArray(saved.items)) ? saved.items : [];
+  trees.forEach((t, i) => {
+    const it = items[i] || {};
+    t.hidden = !!it.hidden;
+    t.scale = Math.min(Math.max(+it.scale || 1, TREE_MIN), TREE_MAX);
+    shapeTree(t);
+  });
+  setTreeOpacity(saved && saved.opacity != null ? +saved.opacity : 1);
+}
+
+function buildTreeRows() {
+  const box = $("tree-rows");
+  box.innerHTML = "";
+  trees.forEach((t, i) => {
+    const row = document.createElement("div");
+    row.className = "trow";
+    row.innerHTML = `
+      <label class="chk"><input type="checkbox"> T${i + 1}</label>
+      <input type="range" min="${TREE_MIN * 100}" max="${TREE_MAX * 100}" step="5" aria-label="Tree T${i + 1} size">
+      <output class="mono"></output>`;
+    const [chk, size, out] = [row.querySelector("input[type=checkbox]"), row.querySelector("input[type=range]"), row.querySelector("output")];
+    t.row = { row, chk, size, out };
+    chk.onchange = () => { t.hidden = !chk.checked; shapeTree(t); syncTreeRow(t); save(); };
+    size.oninput = () => { t.scale = size.value / 100; shapeTree(t); syncTreeRow(t); save(); };
+    box.appendChild(row);
+  });
+  $("s-topac").oninput = (e) => { setTreeOpacity(e.target.value / 100); syncTrees(); save(); };
+  $("b-trees-show").onclick = () => { trees.forEach((t) => { t.hidden = false; shapeTree(t); }); syncTrees(); save(); };
+  $("b-trees-hide").onclick = () => { trees.forEach((t) => { t.hidden = true; shapeTree(t); }); syncTrees(); save(); };
+  $("b-trees-reset").onclick = () => { applyTreeSettings(null); syncTrees(); save(); };
+}
+
+function syncTreeRow(t) {
+  t.row.chk.checked = !t.hidden;
+  t.row.size.value = Math.round(t.scale * 100);
+  t.row.size.disabled = t.hidden;
+  t.row.out.textContent = t.hidden ? "off" : `${(t.h * t.scale * U).toFixed(1)} ${U === 1 ? "m" : "ft"}`;
+}
+
+function syncTrees() {
+  trees.forEach(syncTreeRow);
+  $("s-topac").value = Math.round(treeOpacity * 100);
+  $("o-topac").textContent = `${Math.round(treeOpacity * 100)}%`;
+}
+
+function flashTreeRow(i) {
+  const row = trees[i].row.row;
+  row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  row.classList.remove("flash");
+  void row.offsetWidth;
+  row.classList.add("flash");
+}
+
 /* -- scene toggles ---------------------------------------------------------- */
 
 $("t-night").onclick = () => setNight(true);
@@ -569,26 +656,36 @@ function toggle(id, fn) {
   b.onclick = () => { const on = !b.classList.contains("on"); b.classList.toggle("on", on); fn(on); };
 }
 toggle("t-beams", (on) => { showBeams = on; lightAll(); });
-toggle("t-labels", (on) => fx.forEach((f) => { f.tag.visible = on; }));
+toggle("t-labels", (on) => {
+  showLabels = on;
+  fx.forEach((f) => { f.tag.visible = on; });
+  trees.forEach(shapeTree);
+});
 toggle("t-trees", (on) => { treeG.visible = on; });
 toggle("t-nb", (on) => { nbG.visible = on; });
 $("t-units").onclick = () => {
   U = U === 1 ? 3.28084 : 1;
   $("t-units").textContent = U === 1 ? "Feet" : "Metres";
   sync();
+  syncTrees();
 };
 document.querySelectorAll("[data-view]").forEach((b) => { b.onclick = () => setView(b.dataset.view); });
 
 /* -- picking ---------------------------------------------------------------- */
 
 const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+// The raycaster ignores visibility, so hidden trees would still catch clicks.
+function shown(o) {
+  for (; o; o = o.parent) if (!o.visible) return false;
+  return true;
+}
 let down = null, hoverQueued = false;
 
 function hit(ev) {
   const r = cv.getBoundingClientRect();
   mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
   ray.setFromCamera(mouse, camera);
-  return ray.intersectObjects(pick, false)[0] || null;
+  return ray.intersectObjects(pick.filter(shown), false)[0] || null;
 }
 
 cv.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
@@ -603,6 +700,8 @@ cv.addEventListener("pointerup", (e) => {
     // A plain click on a fixture selects it.
     const i = fx.findIndex((f) => f.body === h.object);
     if (i >= 0) { sel = i; sync(); }
+    const ti = trees.findIndex((t) => t.crown === h.object);
+    if (ti >= 0) flashTreeRow(ti);
     return;
   }
   const f = fx[sel], p = h.point;
@@ -668,7 +767,11 @@ function resize() {
 (async () => {
   const [rigRes, yardRes] = await Promise.all([fetch("/api/rig"), fetch("/api/yard")]);
   rig = await rigRes.json();
-  buildFixtures(await yardRes.json());
+  const savedYard = await yardRes.json();
+  buildFixtures(savedYard);
+  buildTreeRows();
+  applyTreeSettings(savedYard.trees);
+  syncTrees();
   buildChips();
   fx.forEach(placeFixture);
   setNight(true);

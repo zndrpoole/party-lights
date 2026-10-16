@@ -70,6 +70,11 @@
   .src th { border-top: 0; color: var(--dim); font-weight: 500; text-transform: uppercase;
     letter-spacing: .06em; font-size: 11px; }
   .src table { border-collapse: collapse; width: 100%; }
+  .trow { display: grid; grid-template-columns: 64px minmax(0, 1fr) 56px; gap: 8px;
+    align-items: center; margin: 2px 0; padding: 2px 4px; border-radius: 6px; }
+  .trow output { font-size: 12px; text-align: right; color: var(--dim); }
+  .trow.flash { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { background: rgba(106, 215, 255, .25); } to { background: transparent; } }
   .t-hi { color: var(--good); } .t-md { color: var(--warn); } .t-lo { color: var(--bad); }
 </style>
 </head>
@@ -146,6 +151,16 @@
       </div>
       <p class="note" id="s-saved" style="margin:6px 0 0">Placement saves on this machine and is shared by every device.</p>
       <textarea id="json" readonly hidden aria-label="Placement JSON"></textarea>
+    </section>
+
+    <section>
+      <h2>Trees</h2>
+      <div class="ctl"><label for="s-topac">See-through</label><input type="range" id="s-topac" min="10" max="100" step="5"><output id="o-topac"></output></div>
+      <div id="tree-rows"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="b-trees-show">Show all</button><button id="b-trees-hide">Hide all</button><button id="b-trees-reset">Reset trees</button>
+      </div>
+      <p class="note" style="margin:6px 0 0">Click a crown to find its row. Labels T1–T11 show on the model. Heights are from 2020–21 LiDAR.</p>
     </section>
 
     <section>
