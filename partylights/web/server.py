@@ -7,6 +7,7 @@ can run the rig from a phone while actually hosting. Three surfaces:
   /live     big-button cue page with keyboard shortcuts, for fast hands
   /viz      draggable stage plan showing what each fixture is doing
   /bench    test bench: raw channel values straight to chosen fixtures
+  /yard     3D model of the backyard, lit by the transmitted frame
   /api/*    JSON, including /api/cue/<name> which is what a Stream Deck hits
 
 Everything mutating is a POST. Nothing here touches DMX directly: requests
@@ -65,11 +66,23 @@ class _JSONProvider(DefaultJSONProvider):
 DEFAULT_LAYOUT = CONFIG_DIR / "layout.local.json"
 #: Live tuning set from the UI (Feel and the dimmer floor), kept across restarts.
 DEFAULT_TUNING = CONFIG_DIR / "tuning.local.json"
+#: Where /yard keeps each fixture's mount point and aim, in metres from the
+#: address point. Local for the same reason as the layout.
+DEFAULT_YARD = CONFIG_DIR / "yard.local.json"
+
+#: /yard placement fields and the range each is clamped to. Lengths are metres
+#: (x east, y north, h up); beam is the full cone angle in degrees.
+YARD_FIELDS = {
+    "x": (-60.0, 60.0), "y": (-60.0, 60.0), "h": (0.0, 15.0),
+    "ax": (-60.0, 60.0), "ay": (-60.0, 60.0), "ah": (0.0, 15.0),
+    "beam": (4.0, 120.0), "throw": (1.0, 60.0),
+}
 
 
 def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=None,
                layout_path: str | Path = DEFAULT_LAYOUT,
-               tuning_path: str | Path = DEFAULT_TUNING) -> Flask:
+               tuning_path: str | Path = DEFAULT_TUNING,
+               yard_path: str | Path = DEFAULT_YARD) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.json = _JSONProvider(app)
     app.config["JSON_SORT_KEYS"] = False
@@ -183,6 +196,7 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
 
     layout_file = Path(layout_path)
     tuning_file = Path(tuning_path)
+    yard_file = Path(yard_path)
 
     def write_json(path: Path, data: dict) -> None:
         # Write then rename, so a crash mid-save cannot leave half a file.
@@ -221,6 +235,15 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             log.warning("ignoring unreadable layout file %s", layout_file)
             return {}
 
+    def read_yard() -> dict:
+        try:
+            return json.loads(yard_file.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            log.warning("ignoring unreadable yard file %s", yard_file)
+            return {}
+
     # Spatial looks need the saved arrangement from the start, not only after
     # the next drag in /viz.
     if engine is not None:
@@ -243,6 +266,10 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
     @app.route("/bench")
     def bench():
         return render_template("bench.html")
+
+    @app.route("/yard")
+    def yard():
+        return render_template("yard.html")
 
     # -- read ------------------------------------------------------------
 
@@ -325,6 +352,36 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         if engine is not None:
             engine.set_layout(layout)
         return jsonify(layout)
+
+    @app.route("/api/yard", methods=["GET"])
+    def api_yard():
+        return jsonify(read_yard())
+
+    @app.route("/api/yard", methods=["POST"])
+    def api_yard_save():
+        """Save where each fixture is mounted in the yard model and where it aims.
+
+        Only the geometry lives here. Colour and level always come from the
+        wire, so the model cannot drift from what the rig is doing.
+        """
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "expected {fixture_id: {x, y, h, ax, ay, ah, beam, throw}}"}), 400
+        yard = {}
+        for fid, spec in data.items():
+            if fid not in patch.by_id:
+                continue
+            if not isinstance(spec, dict):
+                return jsonify({"error": f"bad placement for {fid}"}), 400
+            out = {}
+            for key, (lo, hi) in YARD_FIELDS.items():
+                try:
+                    out[key] = round(min(max(float(spec[key]), lo), hi), 3)
+                except (TypeError, KeyError, ValueError):
+                    return jsonify({"error": f"bad {key} for {fid}"}), 400
+            yard[fid] = out
+        write_json(yard_file, yard)
+        return jsonify(yard)
 
     @app.route("/api/softness", methods=["POST"])
     def api_softness():

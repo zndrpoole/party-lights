@@ -110,6 +110,23 @@ def test_layout_round_trips_and_drops_unknown_fixtures(patch, tmp_path):
     assert client.post("/api/layout", json={"par1": {"x": "left"}}).status_code == 400
 
 
+def test_yard_placement_round_trips_clamped_and_drops_unknown_fixtures(patch, tmp_path):
+    universe = Universe(NullDriver(), slot_count=patch.max_channel)
+    client = create_app(patch=patch, universe=universe, state=None, engine=None, cues=None,
+                        layout_path=tmp_path / "layout.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    assert client.get("/api/yard").get_json() == {}
+    spec = {"x": 4.5, "y": -5.5, "h": -1, "ax": 7.7, "ay": -4.6, "ah": 6,
+            "beam": 500, "throw": 20}
+    saved = client.post("/api/yard", json={"par1": spec, "ghost": spec}).get_json()
+    assert saved == {"par1": {**spec, "h": 0.0, "beam": 120.0}}
+    assert client.get("/api/yard").get_json() == saved
+    assert client.post("/api/yard", json={"par1": {**spec, "beam": "wide"}}).status_code == 400
+    assert client.post("/api/yard", json={"par1": {"x": 1}}).status_code == 400
+    assert client.post("/api/yard", json=[1]).status_code == 400
+    assert client.get("/yard").status_code == 200
+
+
 def test_softness_is_saved_and_restored_across_restarts(patch, tmp_path):
     from partylights.engine.state import EngineState
     tuning = tmp_path / "tuning.json"

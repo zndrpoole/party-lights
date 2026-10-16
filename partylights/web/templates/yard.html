@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Yard View</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  /* A 3D model of the backyard on the left, the fixture console on the right;
+     they stack on a phone. Same dark palette as every other page. */
+  .yard {
+    display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px;
+    margin-top: 14px; height: calc(100vh - 92px); min-height: 520px;
+  }
+  @media (max-width: 860px) {
+    .yard { grid-template-columns: minmax(0, 1fr); height: auto; }
+    .scene { height: 58vh; min-height: 320px; }
+  }
+  .scene {
+    position: relative; border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: hidden; background: #070b12; min-height: 0;
+  }
+  #cv { width: 100%; height: 100%; display: block; touch-action: none; }
+  .ov {
+    position: absolute; z-index: 2; font: 11px ui-monospace, Menlo, monospace;
+    color: #dbe6ef; background: rgba(8, 13, 19, .75); padding: 5px 8px;
+    border-radius: 6px; pointer-events: none;
+  }
+  #readout { left: 10px; bottom: 10px; max-width: calc(100% - 20px); }
+  #compass { right: 10px; top: 10px; width: 44px; height: 44px; border-radius: 50%;
+    padding: 0; display: grid; place-items: center; }
+  #needle { width: 0; height: 0; border-left: 6px solid transparent;
+    border-right: 6px solid transparent; border-bottom: 20px solid var(--accent); position: relative; }
+  #needle::after { content: "N"; position: absolute; left: -4px; top: -17px;
+    font-size: 10px; color: var(--accent); }
+  .views { position: absolute; left: 10px; top: 10px; display: flex; gap: 6px;
+    flex-wrap: wrap; z-index: 2; max-width: calc(100% - 70px); }
+  .views button { background: rgba(8, 13, 19, .8); min-height: 32px; padding: 4px 10px; font-size: 13px; }
+
+  .console { overflow: auto; min-height: 0; padding: 14px; margin: 0; }
+  .console section { border-top: 1px solid var(--line); padding: 12px 0; }
+  .console section:first-child { border-top: 0; padding-top: 0; }
+  .console button { min-height: 34px; padding: 5px 10px; font-size: 13px; }
+  .console button.on { background: var(--accent); border-color: var(--accent); color: #140a02; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+  .chips { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+  .chips button { display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 5px 0; font: 12px ui-monospace, Menlo, monospace; min-height: 0; }
+  .chips i { width: 14px; height: 14px; border-radius: 50%; display: block;
+    border: 1px solid rgba(128, 128, 128, .6); background: #000; }
+  .chips button.sel { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+
+  .fname { font-weight: 600; margin: 10px 0 2px; }
+  .fsub { font: 11px ui-monospace, Menlo, monospace; color: var(--dim); margin-bottom: 6px; }
+  .ctl { display: grid; grid-template-columns: 88px minmax(0, 1fr) 60px; gap: 8px;
+    align-items: center; margin: 5px 0; }
+  .ctl label { color: var(--dim); font-size: 12px; }
+  .ctl output { font: 12px ui-monospace, Menlo, monospace; text-align: right; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=color] { width: 34px; height: 28px; padding: 0; border: 1px solid var(--line);
+    border-radius: 6px; background: none; }
+  .chk { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .preview-only[hidden] { display: none !important; }
+  textarea { width: 100%; height: 70px; font: 11px ui-monospace, Menlo, monospace;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; margin-top: 6px; }
+  .src td, .src th { text-align: left; vertical-align: top; padding: 5px 4px;
+    border-top: 1px solid var(--line); font-size: 12px; }
+  .src th { border-top: 0; color: var(--dim); font-weight: 500; text-transform: uppercase;
+    letter-spacing: .06em; font-size: 11px; }
+  .src table { border-collapse: collapse; width: 100%; }
+  .t-hi { color: var(--good); } .t-md { color: var(--warn); } .t-lo { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap" style="max-width:1400px">
+
+<header>
+  <h1>Yard</h1>
+  <span class="pill"><i class="dot" id="d-wire"></i> Wire <b id="s-fps">—</b></span>
+  <span class="pill">Look <b id="s-look">—</b></span>
+  <span class="spacer"></span>
+  <a href="/viz">Stage view</a>
+  <a href="/live">Live</a>
+  <a href="/">Full control &rarr;</a>
+</header>
+
+<div class="yard">
+  <div class="scene">
+    <canvas id="cv" aria-label="3D model of the backyard with the rig's fixtures"></canvas>
+    <div class="views">
+      <button data-view="home">Reset</button><button data-view="top">Top</button>
+      <button data-view="street">Street</button><button data-view="yard">Yard</button>
+    </div>
+    <div class="ov" id="compass"><div id="needle"></div></div>
+    <div class="ov" id="readout">Hover the ground for coordinates</div>
+  </div>
+
+  <aside class="panel console">
+    <section>
+      <h2>Colour source</h2>
+      <div class="row">
+        <button id="m-live" class="on">Live rig</button>
+        <button id="m-preview">Preview</button>
+      </div>
+      <p class="note" id="m-note" style="margin:6px 0 0"></p>
+    </section>
+
+    <section>
+      <h2>Fixtures</h2>
+      <div class="chips" id="chips"></div>
+      <div class="fname" id="fname"></div>
+      <div class="fsub" id="fsub"></div>
+      <div class="row preview-only" hidden>
+        <label class="chk"><input type="checkbox" id="f-on"> On</label>
+        <input type="color" id="f-color" aria-label="Preview colour">
+      </div>
+      <div class="ctl preview-only" hidden><label for="s-dim">Dimmer</label><input type="range" id="s-dim" min="0" max="100" step="1"><output id="o-dim"></output></div>
+      <div class="ctl"><label for="s-beam">Beam angle</label><input type="range" id="s-beam" min="8" max="80" step="1"><output id="o-beam"></output></div>
+      <div class="ctl"><label for="s-throw">Throw</label><input type="range" id="s-throw" min="4" max="45" step="0.5"><output id="o-throw"></output></div>
+      <div class="ctl"><label for="s-x">Position E</label><input type="range" id="s-x" min="-24" max="20" step="0.1"><output id="o-x"></output></div>
+      <div class="ctl"><label for="s-y">Position N</label><input type="range" id="s-y" min="-14" max="36" step="0.1"><output id="o-y"></output></div>
+      <div class="ctl"><label for="s-h">Mount height</label><input type="range" id="s-h" min="0" max="8" step="0.05"><output id="o-h"></output></div>
+      <div class="ctl"><label for="s-ax">Aim E</label><input type="range" id="s-ax" min="-24" max="20" step="0.1"><output id="o-ax"></output></div>
+      <div class="ctl"><label for="s-ay">Aim N</label><input type="range" id="s-ay" min="-14" max="36" step="0.1"><output id="o-ay"></output></div>
+      <div class="ctl"><label for="s-ah">Aim height</label><input type="range" id="s-ah" min="0" max="13" step="0.1"><output id="o-ah"></output></div>
+      <div class="row" style="margin-top:8px">
+        <button id="pick-pos">Click scene to move</button><button id="pick-aim">Click scene to aim</button>
+        <label class="chk"><input type="checkbox" id="f-shadow"> Shadows</label>
+      </div>
+      <p class="note" id="shadow-note" style="margin:6px 0 0"></p>
+    </section>
+
+    <section class="preview-only" hidden>
+      <h2>Preview looks</h2>
+      <div class="row" id="presets"></div>
+    </section>
+
+    <section>
+      <h2>Placement</h2>
+      <div class="row">
+        <button id="b-reset">Reset placement</button>
+        <button id="b-stage" title="Write these positions, seen from above, to the Stage view layout that spatial looks follow">Use for spatial looks</button>
+        <button id="b-copy">Copy JSON</button>
+      </div>
+      <p class="note" id="s-saved" style="margin:6px 0 0">Placement saves on this machine and is shared by every device.</p>
+      <textarea id="json" readonly hidden aria-label="Placement JSON"></textarea>
+    </section>
+
+    <section>
+      <h2>Scene</h2>
+      <div class="row">
+        <button id="t-night" class="on">Night</button><button id="t-day">Day</button>
+        <button id="t-beams" class="on">Beams</button><button id="t-labels" class="on">Labels</button>
+        <button id="t-trees" class="on">Trees</button><button id="t-nb" class="on">Neighbours</button>
+        <button id="t-units">Feet</button>
+      </div>
+    </section>
+
+    <section class="src">
+      <h2>What the model is built from</h2>
+      <table>
+        <tr><th>Item</th><th>Source</th><th>Trust</th></tr>
+        <tr><td>Lot <span class="note mono" id="lotinfo"></span></td><td>City of Chandler parcel layer, APN 303-77-226. Not a survey.</td><td class="t-hi">High</td></tr>
+        <tr><td>House outline</td><td>OpenStreetMap, checked against aerial imagery and LiDAR roof edges (within ~1 m).</td><td class="t-md">Medium</td></tr>
+        <tr><td>Heights, trees</td><td>USGS 3DEP LiDAR, flown 2020–21. Roofs simplified from 1 m cells; trees may have changed.</td><td class="t-md">Medium</td></tr>
+        <tr><td>Boundary walls</td><td>LiDAR returns near the lot line; shrubs skew them. Tape-measure these.</td><td class="t-lo">Low</td></tr>
+        <tr><td>Not in the data</td><td>Patio, pool, pergola, the ~3 m object east of the house, colours, doors, windows.</td><td class="t-lo">Missing</td></tr>
+      </table>
+      <p class="note">Light here is for colour, angle and placement. It is not photometric. Strobe is not drawn: the fixture times it, not the signal.</p>
+    </section>
+  </aside>
+</div>
+
+</div>
+<script src="/static/vendor/three/three.min.js"></script>
+<script src="/static/vendor/three/OrbitControls.js"></script>
+<script src="/static/yard.js"></script>
+</body>
+</html>
