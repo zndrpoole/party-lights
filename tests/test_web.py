@@ -236,3 +236,21 @@ def test_rig_lists_every_palette_under_a_known_theme(patch, tmp_path):
     themes = [t["name"] for t in rig["palette_themes"]]
     assert themes == ["halloween", "party", "club", "functional", "misc"]
     assert all(p["theme"] in themes for p in rig["palettes"])
+
+
+def test_yard_layouts_are_validated_and_saved(patch, tmp_path):
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
+                        cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    geom = {"x": 1, "y": 2, "h": 0.15, "ax": 1, "ay": 2.5, "ah": 99, "beam": 28, "throw": 6}
+    body = {"layout": "Rear wall glow",
+            "layouts": {"Rear wall glow": {"note": "Uplights", "fixtures": {"par1": geom, "ghost": geom}}}}
+    saved = client.post("/api/yard", json=body).get_json()
+    assert saved["layout"] == "Rear wall glow"
+    lay = saved["layouts"]["Rear wall glow"]
+    assert lay["note"] == "Uplights" and list(lay["fixtures"]) == ["par1"]
+    assert lay["fixtures"]["par1"]["ah"] == 15.0
+    assert client.post("/api/yard", json={"layouts": {"x": {"fixtures": {"par1": {"x": 1}}}}}).status_code == 400
+    assert client.post("/api/yard", json={"layouts": {"x": {"note": "no fixtures"}}}).status_code == 400
+    assert client.post("/api/yard", json={"par1": {**geom, "beam": "wide"}}).status_code == 400
+

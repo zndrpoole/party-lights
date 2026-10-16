@@ -83,7 +83,8 @@
     border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 13px; min-width: 0; }
   .arow span { font-size: 11px; color: var(--dim); white-space: nowrap; }
   .arow button { min-height: 30px; padding: 0; }
-  #a-name { flex: 1 1 140px; }
+  #a-name, #l-name { flex: 1 1 140px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 13px; min-width: 0; }
   .t-hi { color: var(--good); } .t-md { color: var(--warn); } .t-lo { color: var(--bad); }
 </style>
 </head>
@@ -149,6 +150,17 @@
     <section class="preview-only" hidden>
       <h2>Preview looks</h2>
       <div class="row" id="presets"></div>
+    </section>
+
+    <section>
+      <h2>Layouts</h2>
+      <div class="row" id="l-list"></div>
+      <p class="note" id="l-note" style="margin:6px 0 0">Saved placements to compare. Click one to move every light it covers.</p>
+      <div class="row" style="margin-top:8px">
+        <input id="l-name" maxlength="40" placeholder="Name for this placement" aria-label="Layout name">
+        <button id="l-save">Save as layout</button>
+        <button id="l-del" disabled>Delete selected</button>
+      </div>
     </section>
 
     <section>

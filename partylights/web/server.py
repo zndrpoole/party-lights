@@ -86,6 +86,21 @@ YARD_AREA_KINDS = ("boundary", "lit", "dark")
 YARD_MAX_AREAS, YARD_MAX_POINTS, YARD_MAX_MARKERS = 50, 200, 100
 YARD_COORD = 100.0
 YARD_NAME_LEN = 40
+#: Named placements to switch between on /yard, and how many to keep.
+YARD_MAX_LAYOUTS, YARD_NOTE_LEN = 20, 400
+
+
+def _clean_geom(spec) -> dict:
+    """Clamp one fixture's /yard placement; raise ValueError on a bad field."""
+    if not isinstance(spec, dict):
+        raise ValueError("expected {x, y, h, ax, ay, ah, beam, throw}")
+    out = {}
+    for key, (lo, hi) in YARD_FIELDS.items():
+        try:
+            out[key] = round(min(max(float(spec[key]), lo), hi), 3)
+        except (TypeError, KeyError, ValueError):
+            raise ValueError(f"bad {key}") from None
+    return out
 
 
 def _coord(v) -> float:
@@ -415,6 +430,25 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
     def api_yard():
         return jsonify(read_yard())
 
+    def clean_layouts(spec) -> dict:
+        """Validate /yard's layouts: {name: {note, fixtures: {fid: placement}}}."""
+        if not isinstance(spec, dict):
+            raise ValueError("layouts must be {name: {note, fixtures}}")
+        out = {}
+        for name, lay in list(spec.items())[:YARD_MAX_LAYOUTS]:
+            if not isinstance(lay, dict) or not isinstance(lay.get("fixtures"), dict):
+                raise ValueError(f"layout {name!r} needs fixtures")
+            fixtures = {}
+            for fid, geom in lay["fixtures"].items():
+                if fid in patch.by_id:
+                    try:
+                        fixtures[fid] = _clean_geom(geom)
+                    except ValueError as e:
+                        raise ValueError(f"layout {name!r}, {fid}: {e}") from None
+            out[str(name)[:YARD_NAME_LEN]] = {"note": str(lay.get("note", ""))[:YARD_NOTE_LEN],
+                                               "fixtures": fixtures}
+        return out
+
     @app.route("/api/yard", methods=["POST"])
     def api_yard_save():
         """Save where each fixture is mounted in the yard model and where it aims.
@@ -423,13 +457,17 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         wire, so the model cannot drift from what the rig is doing. The
         reserved key "trees" holds which trees are hidden, their size and how
         see-through they are; "areas" and "markers" hold the shapes and pins
-        drawn on the ground (backyard boundary, where to light, where not to).
+        drawn on the ground (backyard boundary, where to light, where not to);
+        "layouts" holds named placements to switch between, and "layout" the
+        one last applied.
         """
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"error": "expected {fixture_id: {x, y, h, ax, ay, ah, beam, throw}}"}), 400
         yard = {}
-        cleaners = {"trees": _clean_trees, "areas": _clean_areas, "markers": _clean_markers}
+        cleaners = {"trees": _clean_trees, "areas": _clean_areas, "markers": _clean_markers,
+                    "layouts": clean_layouts,
+                    "layout": lambda v: str(v)[:YARD_NAME_LEN]}
         for key, clean in cleaners.items():
             if key in data:
                 try:
@@ -439,15 +477,10 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         for fid, spec in data.items():
             if fid not in patch.by_id:
                 continue
-            if not isinstance(spec, dict):
-                return jsonify({"error": f"bad placement for {fid}"}), 400
-            out = {}
-            for key, (lo, hi) in YARD_FIELDS.items():
-                try:
-                    out[key] = round(min(max(float(spec[key]), lo), hi), 3)
-                except (TypeError, KeyError, ValueError):
-                    return jsonify({"error": f"bad {key} for {fid}"}), 400
-            yard[fid] = out
+            try:
+                yard[fid] = _clean_geom(spec)
+            except ValueError as e:
+                return jsonify({"error": f"{fid}: {e}"}), 400
         write_json(yard_file, yard)
         return jsonify(yard)
 

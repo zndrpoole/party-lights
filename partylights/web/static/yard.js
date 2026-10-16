@@ -545,7 +545,8 @@ function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const r = await post("/api/yard", { ...placement(), trees: treeSettings(), ...areaSettings() });
+      const r = await post("/api/yard", { ...placement(), trees: treeSettings(), ...areaSettings(),
+                                          layouts, layout: activeLayout });
       $("s-saved").textContent = r.ok ? "Placement saved." : "Save failed.";
     } catch {
       $("s-saved").textContent = "Save failed: is the app running?";
@@ -655,6 +656,60 @@ function flashTreeRow(i) {
   void row.offsetWidth;
   row.classList.add("flash");
 }
+
+/* -- layouts ---------------------------------------------------------------- */
+
+// Named placements to flip between. A layout moves only the fixtures it lists,
+// so one that leaves out the accent leaves the accent where it is.
+let layouts = {};        // name -> {note, fixtures: {fid: geometry}}
+let activeLayout = "";
+
+function buildLayouts() {
+  const box = $("l-list");
+  box.innerHTML = "";
+  Object.keys(layouts).forEach((name) => {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.classList.toggle("on", name === activeLayout);
+    b.onclick = () => applyLayout(name);
+    box.appendChild(b);
+  });
+  const lay = layouts[activeLayout];
+  $("l-note").textContent = lay
+    ? (lay.note || `${Object.keys(lay.fixtures).length} fixtures.`)
+    : "Saved placements to compare. Click one to move every light it covers.";
+  $("l-del").disabled = !lay;
+}
+
+function applyLayout(name) {
+  const lay = layouts[name];
+  if (!lay) return;
+  fx.forEach((f) => {
+    const g = lay.fixtures[f.id];
+    if (g) { f.g = { ...f.g, ...g }; placeFixture(f); }
+  });
+  activeLayout = name;
+  buildLayouts();
+  sync();
+  save();
+}
+
+$("l-save").onclick = () => {
+  const name = $("l-name").value.trim();
+  if (!name) { $("l-note").textContent = "Type a name first."; return; }
+  layouts[name] = { note: layouts[name]?.note || "Saved from the page.", fixtures: placement() };
+  activeLayout = name;
+  $("l-name").value = "";
+  buildLayouts();
+  save();
+};
+$("l-del").onclick = () => {
+  if (!layouts[activeLayout]) return;
+  delete layouts[activeLayout];
+  activeLayout = "";
+  buildLayouts();
+  save();
+};
 
 /* -- areas and markers ------------------------------------------------------ */
 
@@ -986,6 +1041,9 @@ function resize() {
   applyTreeSettings(savedYard.trees);
   syncTrees();
   applyAreaSettings(savedYard);
+  layouts = savedYard.layouts || {};
+  activeLayout = savedYard.layout || "";
+  buildLayouts();
   buildChips();
   fx.forEach(placeFixture);
   setNight(true);
