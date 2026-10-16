@@ -141,6 +141,27 @@ def test_yard_tree_settings_are_clamped_and_saved(patch, tmp_path):
     assert client.post("/api/yard", json={"trees": {"items": [{"scale": "big"}]}}).status_code == 400
 
 
+def test_yard_areas_and_markers_are_validated_and_saved(patch, tmp_path):
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
+                        cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    body = {"areas": [{"name": "Dance floor", "kind": "lit",
+                       "points": [[0, 0], [5, 0], [500, 5]]}],
+            "markers": [{"name": "Speaker", "x": 3.14159, "y": -2}]}
+    saved = client.post("/api/yard", json=body).get_json()
+    assert saved == {"areas": [{"name": "Dance floor", "kind": "lit",
+                                "points": [[0.0, 0.0], [5.0, 0.0], [100.0, 5.0]]}],
+                     "markers": [{"name": "Speaker", "x": 3.14, "y": -2.0}]}
+    assert client.get("/api/yard").get_json() == saved
+    bad = [{"areas": [{"kind": "glow", "points": [[0, 0]] * 3}]},
+           {"areas": [{"kind": "lit", "points": [[0, 0], [1, 1]]}]},
+           {"areas": [{"kind": "lit", "points": [[0, "x"]] * 3}]},
+           {"markers": [{"name": "no position"}]},
+           {"markers": "here"}]
+    for b in bad:
+        assert client.post("/api/yard", json=b).status_code == 400, b
+
+
 def test_softness_is_saved_and_restored_across_restarts(patch, tmp_path):
     from partylights.engine.state import EngineState
     tuning = tmp_path / "tuning.json"

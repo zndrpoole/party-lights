@@ -81,6 +81,45 @@ YARD_FIELDS = {
 YARD_TREE_SCALE = (0.2, 1.5)
 YARD_TREE_OPACITY = (0.1, 1.0)
 YARD_MAX_TREES = 64
+#: Shapes and pins drawn on /yard: what each area means, and the limits.
+YARD_AREA_KINDS = ("boundary", "lit", "dark")
+YARD_MAX_AREAS, YARD_MAX_POINTS, YARD_MAX_MARKERS = 50, 200, 100
+YARD_COORD = 100.0
+YARD_NAME_LEN = 40
+
+
+def _coord(v) -> float:
+    return round(min(max(float(v), -YARD_COORD), YARD_COORD), 2)
+
+
+def _clean_areas(spec) -> list:
+    """Validate /yard's areas: [{name, kind, points: [[x, y], ...]}]."""
+    if not isinstance(spec, list):
+        raise ValueError("areas must be a list")
+    out = []
+    for a in spec[:YARD_MAX_AREAS]:
+        if not isinstance(a, dict) or a.get("kind") not in YARD_AREA_KINDS:
+            raise ValueError(f"each area needs a kind: one of {', '.join(YARD_AREA_KINDS)}")
+        pts = a.get("points")
+        if not isinstance(pts, list) or not 3 <= len(pts) <= YARD_MAX_POINTS:
+            raise ValueError(f"an area needs 3 to {YARD_MAX_POINTS} points")
+        out.append({"name": str(a.get("name", ""))[:YARD_NAME_LEN] or a["kind"],
+                    "kind": a["kind"],
+                    "points": [[_coord(p[0]), _coord(p[1])] for p in pts]})
+    return out
+
+
+def _clean_markers(spec) -> list:
+    """Validate /yard's markers: [{name, x, y}]."""
+    if not isinstance(spec, list):
+        raise ValueError("markers must be a list")
+    out = []
+    for m in spec[:YARD_MAX_MARKERS]:
+        if not isinstance(m, dict):
+            raise ValueError("each marker must be {name, x, y}")
+        out.append({"name": str(m.get("name", ""))[:YARD_NAME_LEN] or "marker",
+                    "x": _coord(m["x"]), "y": _coord(m["y"])})
+    return out
 
 
 def _clean_trees(spec) -> dict:
@@ -383,17 +422,20 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         Only the geometry lives here. Colour and level always come from the
         wire, so the model cannot drift from what the rig is doing. The
         reserved key "trees" holds which trees are hidden, their size and how
-        see-through they are.
+        see-through they are; "areas" and "markers" hold the shapes and pins
+        drawn on the ground (backyard boundary, where to light, where not to).
         """
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"error": "expected {fixture_id: {x, y, h, ax, ay, ah, beam, throw}}"}), 400
         yard = {}
-        if "trees" in data:
-            try:
-                yard["trees"] = _clean_trees(data["trees"])
-            except (TypeError, ValueError) as e:
-                return jsonify({"error": str(e)}), 400
+        cleaners = {"trees": _clean_trees, "areas": _clean_areas, "markers": _clean_markers}
+        for key, clean in cleaners.items():
+            if key in data:
+                try:
+                    yard[key] = clean(data[key])
+                except (TypeError, ValueError, KeyError, IndexError) as e:
+                    return jsonify({"error": f"{key}: {e}"}), 400
         for fid, spec in data.items():
             if fid not in patch.by_id:
                 continue

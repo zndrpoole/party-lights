@@ -296,20 +296,25 @@ scene.add(aimDot, aimLine);
 // A short label floating above each fixture, so the patch order can be read
 // off the model (chases run in that order).
 function makeTag(text, color = "#e8eaf0") {
+  const font = "600 30px ui-monospace, Menlo, monospace";
   const c = document.createElement("canvas");
-  c.width = 128; c.height = 64;
-  const g = c.getContext("2d");
+  let g = c.getContext("2d");
+  g.font = font;
+  // Short tags keep the original 128px canvas; longer names widen it.
+  c.width = Math.max(128, Math.ceil(g.measureText(text).width) + 48);
+  c.height = 64;
+  g = c.getContext("2d");
   g.fillStyle = "rgba(8,13,19,.8)";
-  g.fillRect(14, 10, 100, 44);
+  g.fillRect(14, 10, c.width - 28, 44);
   g.fillStyle = color;
-  g.font = "600 30px ui-monospace, Menlo, monospace";
+  g.font = font;
   g.textAlign = "center"; g.textBaseline = "middle";
-  g.fillText(text, 64, 33);
+  g.fillText(text, c.width / 2, 33);
   const tex = new THREE.CanvasTexture(c);
   tex.encoding = THREE.sRGBEncoding;
   // Fixed size on screen, so the numbers stay readable from any distance.
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
-  s.scale.set(.05, .025, 1);
+  s.scale.set(.05 * c.width / 128, .025, 1);
   s.renderOrder = 3;
   return s;
 }
@@ -516,8 +521,8 @@ function setPick(m) {
   $("pick-aim").classList.toggle("on", pickMode === "aim");
   cv.style.cursor = pickMode ? "crosshair" : "";
 }
-$("pick-pos").onclick = () => setPick("pos");
-$("pick-aim").onclick = () => setPick("aim");
+$("pick-pos").onclick = () => { cancelDraft(); setPick("pos"); };
+$("pick-aim").onclick = () => { cancelDraft(); setPick("aim"); };
 
 /* -- saving ----------------------------------------------------------------- */
 
@@ -536,7 +541,7 @@ function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const r = await post("/api/yard", { ...placement(), trees: treeSettings() });
+      const r = await post("/api/yard", { ...placement(), trees: treeSettings(), ...areaSettings() });
       $("s-saved").textContent = r.ok ? "Placement saved." : "Save failed.";
     } catch {
       $("s-saved").textContent = "Save failed: is the app running?";
@@ -647,6 +652,208 @@ function flashTreeRow(i) {
   row.classList.add("flash");
 }
 
+/* -- areas and markers ------------------------------------------------------ */
+
+// Shapes drawn on the ground to say where the party is and where light should
+// (and should not) land, plus named points. They save with the placement, so
+// /api/yard holds them as exact coordinates in the model's metres.
+const AREA_KINDS = {
+  boundary: { label: "Backyard boundary", color: 0x6ad7ff, fill: 0 },
+  lit: { label: "Light this", color: 0xffa733, fill: .28 },
+  dark: { label: "Keep dark", color: 0xff4d5e, fill: .22 },
+};
+const MARKER_COLOR = 0xe8eaf0;
+let areas = [];          // [{name, kind, points: [[x, y], ...], obj}]
+let markers = [];        // [{name, x, y, obj}]
+let draft = null;        // the area being drawn: {name, kind, points, obj}
+let placingMarker = false;
+const areaG = new THREE.Group();
+scene.add(areaG);
+const dotGeom = new THREE.SphereGeometry(.15, 8, 6);
+const hex = (c) => "#" + c.toString(16).padStart(6, "0");
+
+function centroid(points) {
+  const n = points.length;
+  return [points.reduce((a, p) => a + p[0], 0) / n, points.reduce((a, p) => a + p[1], 0) / n];
+}
+
+function areaObject(a, open) {
+  const k = AREA_KINDS[a.kind], grp = new THREE.Group();
+  const pts = a.points.map(([x, y]) => new THREE.Vector3(x, .1, -y));
+  if (pts.length >= 2) {
+    const Line = open || pts.length < 3 ? THREE.Line : THREE.LineLoop;
+    grp.add(new Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: k.color, depthTest: false, toneMapped: false })));
+  }
+  if (k.fill && !open && a.points.length >= 3) {
+    const m = new THREE.Mesh(new THREE.ShapeGeometry(shapeOf(a.points)).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: k.color, transparent: true, opacity: k.fill, toneMapped: false,
+                                    depthWrite: false, side: THREE.DoubleSide }));
+    m.position.y = .08;
+    grp.add(m);
+  }
+  const dotM = new THREE.MeshBasicMaterial({ color: k.color, toneMapped: false });
+  a.points.forEach(([x, y]) => {
+    const d = new THREE.Mesh(dotGeom, dotM);
+    d.position.set(x, .12, -y);
+    grp.add(d);
+  });
+  if (!open && a.points.length) {
+    const [cx, cy] = centroid(a.points);
+    const t = makeTag(a.name, hex(k.color));
+    t.position.set(cx, .8, -cy);
+    grp.add(t);
+  }
+  grp.renderOrder = 2;
+  return grp;
+}
+
+function markerObject(m) {
+  const grp = new THREE.Group();
+  const pin = new THREE.Mesh(new THREE.ConeGeometry(.25, .9, 12), new THREE.MeshBasicMaterial({ color: MARKER_COLOR }));
+  pin.rotation.x = Math.PI;
+  pin.position.set(m.x, .45, -m.y);
+  const t = makeTag(m.name);
+  t.position.set(m.x, 1.5, -m.y);
+  grp.add(pin, t);
+  return grp;
+}
+
+function redrawAreas() {
+  areaG.clear();
+  areas.forEach((a) => { a.obj = areaObject(a, false); areaG.add(a.obj); });
+  markers.forEach((m) => { m.obj = markerObject(m); areaG.add(m.obj); });
+  if (draft) { draft.obj = areaObject(draft, true); areaG.add(draft.obj); }
+  buildAreaList();
+}
+
+function areaSettings() {
+  return {
+    areas: areas.map(({ name, kind, points }) => ({ name, kind, points })),
+    markers: markers.map(({ name, x, y }) => ({ name, x, y })),
+  };
+}
+
+function applyAreaSettings(saved) {
+  areas = (saved.areas || []).filter((a) => AREA_KINDS[a.kind] && Array.isArray(a.points) && a.points.length >= 3)
+    .map((a) => ({ name: String(a.name || AREA_KINDS[a.kind].label), kind: a.kind, points: a.points }));
+  markers = (saved.markers || []).map((m) => ({ name: String(m.name || "Marker"), x: +m.x, y: +m.y }));
+  redrawAreas();
+}
+
+function defaultName(kind) {
+  const n = areas.filter((a) => a.kind === kind).length + 1;
+  return kind === "boundary" && n === 1 ? "Backyard" : `${AREA_KINDS[kind].label} ${n}`;
+}
+
+function areaMode() {
+  const busy = !!draft || placingMarker;
+  $("a-drawing").hidden = !draft;
+  $("a-draw").classList.toggle("on", !!draft);
+  $("a-marker").classList.toggle("on", placingMarker);
+  $("a-finish").disabled = !draft || draft.points.length < 3;
+  $("a-undo").disabled = !draft || !draft.points.length;
+  cv.style.cursor = busy || pickMode ? "crosshair" : "";
+  $("a-note").textContent = draft
+    ? `Drawing "${draft.name}": ${draft.points.length} point${draft.points.length === 1 ? "" : "s"}. Click the ground to add corners. Finish or Enter closes it, Esc cancels.`
+    : placingMarker ? "Click the ground to drop the marker. Esc cancels."
+    : "Top view works best. Pick a kind, name it, then click Draw area.";
+}
+
+function stopPicking() {
+  pickMode = null;
+  $("pick-pos").classList.remove("on");
+  $("pick-aim").classList.remove("on");
+}
+
+$("a-draw").onclick = () => {
+  if (draft) { finishDraft(); return; }
+  stopPicking();
+  placingMarker = false;
+  const kind = $("a-kind").value;
+  draft = { kind, name: $("a-name").value.trim() || defaultName(kind), points: [] };
+  $("a-name").value = "";
+  setView("top");
+  redrawAreas();
+  areaMode();
+};
+$("a-marker").onclick = () => {
+  stopPicking();
+  if (draft) cancelDraft();
+  placingMarker = !placingMarker;
+  if (placingMarker) setView("top");
+  areaMode();
+};
+$("a-finish").onclick = () => finishDraft();
+$("a-undo").onclick = () => { if (draft) { draft.points.pop(); redrawAreas(); areaMode(); } };
+$("a-cancel").onclick = () => cancelDraft();
+
+function finishDraft() {
+  if (!draft || draft.points.length < 3) return;
+  areas.push({ name: draft.name, kind: draft.kind, points: draft.points });
+  draft = null;
+  redrawAreas();
+  areaMode();
+  save();
+}
+
+function cancelDraft() {
+  draft = null;
+  placingMarker = false;
+  redrawAreas();
+  areaMode();
+}
+
+function groundClick(p) {
+  const pt = [+p.x.toFixed(2), +(-p.z).toFixed(2)];
+  if (placingMarker) {
+    const name = $("a-name").value.trim() || `Marker ${markers.length + 1}`;
+    $("a-name").value = "";
+    markers.push({ name, x: pt[0], y: pt[1] });
+    placingMarker = false;
+    redrawAreas();
+    areaMode();
+    save();
+    return;
+  }
+  draft.points.push(pt);
+  redrawAreas();
+  areaMode();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!draft && !placingMarker) return;
+  if (e.key === "Escape") { cancelDraft(); e.preventDefault(); }
+  else if (e.key === "Enter" && draft) { finishDraft(); e.preventDefault(); }
+});
+
+function buildAreaList() {
+  const box = $("a-list");
+  box.innerHTML = "";
+  const row = (color, name, detail, onRename, onDelete) => {
+    const r = document.createElement("div");
+    r.className = "arow";
+    r.innerHTML = `<i style="background:${color}"></i><input maxlength="40" aria-label="Name">
+      <span class="mono"></span><button aria-label="Delete">✕</button>`;
+    const [input, span, del] = [r.querySelector("input"), r.querySelector("span"), r.querySelector("button")];
+    input.value = name;
+    span.textContent = detail;
+    input.onchange = () => { onRename(input.value.trim() || name); redrawAreas(); save(); };
+    del.onclick = () => { onDelete(); redrawAreas(); save(); };
+    box.appendChild(r);
+  };
+  areas.forEach((a, i) => {
+    const m2 = area(a.points);
+    const size = U === 1 ? `${m2.toFixed(0)} m²` : `${(m2 * 10.7639).toFixed(0)} ft²`;
+    row(hex(AREA_KINDS[a.kind].color), a.name, `${AREA_KINDS[a.kind].label.split(" ")[0]} · ${size}`,
+        (n) => { a.name = n; }, () => areas.splice(i, 1));
+  });
+  markers.forEach((m, i) => {
+    row(hex(MARKER_COLOR), m.name, `pin · E${m.x.toFixed(0)} N${m.y.toFixed(0)}`,
+        (n) => { m.name = n; }, () => markers.splice(i, 1));
+  });
+}
+
 /* -- scene toggles ---------------------------------------------------------- */
 
 $("t-night").onclick = () => setNight(true);
@@ -668,6 +875,7 @@ $("t-units").onclick = () => {
   $("t-units").textContent = U === 1 ? "Feet" : "Metres";
   sync();
   syncTrees();
+  buildAreaList();
 };
 document.querySelectorAll("[data-view]").forEach((b) => { b.onclick = () => setView(b.dataset.view); });
 
@@ -696,6 +904,7 @@ cv.addEventListener("pointerup", (e) => {
   if (moved > 5) return;
   const h = hit(e);
   if (!h) return;
+  if (draft || placingMarker) { groundClick(h.point); return; }
   if (!pickMode) {
     // A plain click on a fixture selects it.
     const i = fx.findIndex((f) => f.body === h.object);
@@ -772,6 +981,7 @@ function resize() {
   buildTreeRows();
   applyTreeSettings(savedYard.trees);
   syncTrees();
+  applyAreaSettings(savedYard);
   buildChips();
   fx.forEach(placeFixture);
   setNight(true);

@@ -61,7 +61,8 @@
   input[type=color] { width: 34px; height: 28px; padding: 0; border: 1px solid var(--line);
     border-radius: 6px; background: none; }
   .chk { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-  .preview-only[hidden] { display: none !important; }
+  /* .row and .ctl set display, which would otherwise beat the hidden attribute. */
+  [hidden] { display: none !important; }
   textarea { width: 100%; height: 70px; font: 11px ui-monospace, Menlo, monospace;
     background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; margin-top: 6px; }
@@ -75,6 +76,14 @@
   .trow output { font-size: 12px; text-align: right; color: var(--dim); }
   .trow.flash { animation: flash 1.2s ease-out; }
   @keyframes flash { from { background: rgba(106, 215, 255, .25); } to { background: transparent; } }
+  .arow { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto 32px; gap: 8px;
+    align-items: center; margin: 4px 0; }
+  .arow i { width: 12px; height: 12px; border-radius: 3px; display: block; }
+  .arow input, .console select, #a-name { background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 13px; min-width: 0; }
+  .arow span { font-size: 11px; color: var(--dim); white-space: nowrap; }
+  .arow button { min-height: 30px; padding: 0; }
+  #a-name { flex: 1 1 140px; }
   .t-hi { color: var(--good); } .t-md { color: var(--warn); } .t-lo { color: var(--bad); }
 </style>
 </head>
@@ -151,6 +160,26 @@
       </div>
       <p class="note" id="s-saved" style="margin:6px 0 0">Placement saves on this machine and is shared by every device.</p>
       <textarea id="json" readonly hidden aria-label="Placement JSON"></textarea>
+    </section>
+
+    <section>
+      <h2>Areas</h2>
+      <div class="row">
+        <select id="a-kind" aria-label="Area kind">
+          <option value="boundary">Backyard boundary</option>
+          <option value="lit">Light this</option>
+          <option value="dark">Keep dark</option>
+        </select>
+        <input id="a-name" maxlength="40" placeholder="Name, e.g. Dance floor" aria-label="Name for the next area or marker">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="a-draw">Draw area</button><button id="a-marker">Add marker</button>
+      </div>
+      <div class="row" id="a-drawing" style="margin-top:8px" hidden>
+        <button id="a-finish">Finish</button><button id="a-undo">Undo point</button><button id="a-cancel">Cancel</button>
+      </div>
+      <p class="note" id="a-note" style="margin:6px 0 0">Top view works best. Pick a kind, name it, then click Draw area.</p>
+      <div id="a-list" style="margin-top:6px"></div>
     </section>
 
     <section>
