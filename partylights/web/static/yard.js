@@ -553,14 +553,36 @@ function save() {
   }, 300);
 }
 
+// Reset moves only the PARs back to their defaults; the accent and anything
+// else outside the PAR bank keep their hand-placed spot. It takes a second
+// click within a few seconds, so a stray tap cannot undo an evening's layout.
+let resetArmed = null;
 $("b-reset").onclick = () => {
-  let extra = 0;
+  const b = $("b-reset");
+  if (!resetArmed) {
+    b.textContent = "Click again to reset the PARs";
+    b.classList.add("on");
+    resetArmed = setTimeout(() => {
+      resetArmed = null;
+      b.textContent = "Reset placement";
+      b.classList.remove("on");
+    }, 4000);
+    return;
+  }
+  clearTimeout(resetArmed);
+  resetArmed = null;
+  b.textContent = "Reset placement";
+  b.classList.remove("on");
   fx.forEach((f, i) => {
-    f.g = { ...(DEFAULTS[i] || { ...EXTRA, x: EXTRA.x + 1.5 * extra, ax: EXTRA.ax + 1.5 * (extra++) }) };
+    if (!f.rig.groups.includes("pars") || !DEFAULTS[i]) return;
+    f.g = { ...DEFAULTS[i] };
     placeFixture(f);
   });
+  activeLayout = "";
+  buildLayouts();
   sync();
   save();
+  $("s-saved").textContent = "PARs reset to their defaults. The accent was left where it was.";
 };
 
 $("b-copy").onclick = () => {

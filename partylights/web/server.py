@@ -87,7 +87,7 @@ YARD_MAX_AREAS, YARD_MAX_POINTS, YARD_MAX_MARKERS = 50, 200, 100
 YARD_COORD = 100.0
 YARD_NAME_LEN = 40
 #: Named placements to switch between on /yard, and how many to keep.
-YARD_MAX_LAYOUTS, YARD_NOTE_LEN = 20, 400
+YARD_MAX_LAYOUTS, YARD_NOTE_LEN = 20, 1000
 
 
 def _clean_geom(spec) -> dict:

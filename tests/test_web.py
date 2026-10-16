@@ -253,4 +253,7 @@ def test_yard_layouts_are_validated_and_saved(patch, tmp_path):
     assert client.post("/api/yard", json={"layouts": {"x": {"fixtures": {"par1": {"x": 1}}}}}).status_code == 400
     assert client.post("/api/yard", json={"layouts": {"x": {"note": "no fixtures"}}}).status_code == 400
     assert client.post("/api/yard", json={"par1": {**geom, "beam": "wide"}}).status_code == 400
+    long_note = "x" * 900
+    saved = client.post("/api/yard", json={"layouts": {"n": {"note": long_note, "fixtures": {}}}}).get_json()
+    assert saved["layouts"]["n"]["note"] == long_note
 
