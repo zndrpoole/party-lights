@@ -4,10 +4,12 @@
 # already have, bump `count` and check the addresses below it still fit. For a
 # new model, drop a profile into config/profiles/ and add an entry.
 #
-# An entry with `count` is a bank: ids get a numeric suffix (par1..par12) and
-# addresses step by the profile's footprint from `address`.
+# An entry with `count` is a bank: ids get a numeric suffix (par1, par2, ...)
+# counting from `first` (default 1), and addresses step by the profile's
+# footprint from `address`.
 #
-# Current usage: 15 x 7ch = 105, plus 10ch = 115 channels of 512. Lots of room.
+# Current usage: 14 x 7ch = 98, plus 10ch = 108 channels used, 1..115 of 512
+# (15..21 is par3's, free while it's out). Lots of room.
 #
 # `position` is assigned automatically in patch order and is what chases use as
 # physical order — so list the PARs in the order they are actually arranged
@@ -17,8 +19,24 @@
 fixtures:
   - id: par
     profile: zq01104
-    count: 12
-    address: 1          # expands to 1, 8, 15, 22, 29, 36, 43, 50, 57, 64, 71, 78
+    count: 2
+    address: 1          # par1, par2 at 1, 8
+    groups: [pars, rgb]
+    label: "PAR"
+
+  # par3 (address 15) is out of the show for now: it's set off to the side.
+  # Uncomment to bring it back between par2 and par4.
+  # - id: par3
+  #   profile: zq01104
+  #   address: 15
+  #   groups: [pars, rgb]
+  #   label: "PAR 3"
+
+  - id: par
+    profile: zq01104
+    count: 9
+    first: 4
+    address: 22         # par4..par12 at 22, 29, 36, 43, 50, 57, 64, 71, 78
     groups: [pars, rgb]
     label: "PAR"
 

@@ -215,7 +215,7 @@ def test_bench_api_validates_input(rig):
     client = create_app(patch=patch, universe=universe, state=state, engine=engine,
                         cues=cues, tuning_path=Path("/nonexistent/tuning.json")).test_client()
     ok = client.post("/api/bench", json={"group": "pars", "values": {"dimmer": 14}})
-    assert ok.status_code == 200 and len(ok.get_json()["held"]) == 15
+    assert ok.status_code == 200 and len(ok.get_json()["held"]) == 14
     assert client.post("/api/bench", json={"ids": ["par1"], "values": {"strobe": 9}}).status_code == 400
     assert client.post("/api/bench", json={"ids": ["par1"], "values": {"dimmer": 300}}).status_code == 400
     assert client.post("/api/bench/release", json={}).get_json() == {"held": {}}
@@ -273,8 +273,9 @@ def test_swell_section_change_rotates_only_after_min_hold(rig):
 def test_swell_pairs_orange_with_purple(rig):
     patch, *_ = rig
     fr = SwellLook(patch).render(silent_state(), palettes.get("halloween-deep"), 0.025)
-    r1, _, b1 = fr["par1"].rgb
-    r4, _, b4 = fr["par4"].rgb
+    pars = [f.fid for f in patch.group("pars")]
+    r1, _, b1 = fr[pars[0]].rgb
+    r4, _, b4 = fr[pars[3]].rgb      # the fourth PAR, first of the next block
     assert r1 == 1.0 and b1 == 0.0      # orange block
     assert b4 == 1.0 and r4 < 0.8       # purple block
 
@@ -333,8 +334,9 @@ def test_mirror_is_symmetric_and_bursts_outward(rig):
     for a, b in zip(pars, reversed(pars)):
         assert abs(early[a].intensity - early[b].intensity) < 1e-9
     # Early on the centre is brightest; later the ring has reached the ends.
-    assert early["par6"].intensity > early["par1"].intensity
-    assert late["par1"].intensity > late["par6"].intensity
+    mid, end = pars[len(pars) // 2], pars[0]
+    assert early[mid].intensity > early[end].intensity
+    assert late[end].intensity > late[mid].intensity
 
 
 def test_colour_follows_bars_not_kicks_when_tempo_is_locked(rig):
@@ -833,7 +835,7 @@ def test_pages_render(client):
 
 def test_rig_endpoint_describes_the_whole_rig(client):
     data = client.get("/api/rig").get_json()
-    assert len(data["fixtures"]) == 16
+    assert len(data["fixtures"]) == 15
     assert data["max_channel"] == 115
     accent = next(f for f in data["fixtures"] if f["id"] == "accent")
     assert accent["has_uv"]
@@ -869,7 +871,7 @@ def test_fixture_endpoint_rejects_malformed_rgb(client):
 
 def test_group_endpoint_applies_to_a_whole_group(client):
     resp = client.post("/api/fixtures", json={"group": "pars", "active": True})
-    assert len(resp.get_json()["applied"]) == 15
+    assert len(resp.get_json()["applied"]) == 14
 
 
 # -- the accent's bass wash ---------------------------------------------------

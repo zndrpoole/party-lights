@@ -164,8 +164,9 @@ class Patch:
 def _expand(entry: dict, profiles: dict[str, FixtureProfile], start_position: int) -> list[PatchedFixture]:
     """Turn one rig.yaml entry into one or more fixtures.
 
-    An entry with `count` becomes a bank: ids get a 1-based numeric suffix and
-    addresses step by the profile's footprint from `address`.
+    An entry with `count` becomes a bank: ids get a numeric suffix counting
+    from `first` (default 1) and addresses step by the profile's footprint from
+    `address`.
     """
     try:
         profile_name = entry["profile"]
@@ -181,6 +182,7 @@ def _expand(entry: dict, profiles: dict[str, FixtureProfile], start_position: in
     count = int(entry.get("count", 1))
     if count < 1:
         raise PatchError(f"{profile_name}: count must be at least 1, got {count}")
+    first = int(entry.get("first", 1))
 
     base_id = entry.get("id")
     if not base_id:
@@ -197,11 +199,11 @@ def _expand(entry: dict, profiles: dict[str, FixtureProfile], start_position: in
 
     out: list[PatchedFixture] = []
     for i in range(count):
-        fid = base_id if count == 1 else f"{base_id}{i + 1}"
+        fid = base_id if count == 1 else f"{base_id}{first + i}"
         out.append(
             PatchedFixture(
                 fid=fid,
-                label=label if count == 1 else f"{label} {i + 1}",
+                label=label if count == 1 else f"{label} {first + i}",
                 profile=profile,
                 address=address + i * profile.footprint,
                 groups=groups,
