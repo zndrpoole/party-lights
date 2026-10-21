@@ -18,6 +18,9 @@ Cues, all in song time:
 
     blackout  [at, until]   PARs and the accent's colour out; uv: off kills UV too
     flash     at            everything to full (white by default), decaying fast
+    slam      at            the bass lights (group: bass) to every emitter at full,
+                            held for `hold` s then eased out over `fade` s; pair
+                            it with a blackout ending at `at` for a cut-then-slam
     build     [at, until]   gate the PARs on the beat grid at a rate that climbs
                             (1/2 notes to 1/16), whiten and level ramping across
     strobe    [at, until]   the fixtures' own strobe in white; skipped when the
@@ -60,6 +63,9 @@ STALE_S = 6.0
 END_PAD_S = 3.0
 #: Build gate rates, in notes per beat: 1/2 notes, then 1/4, 1/8, 1/16.
 BUILD_RATES = (0.5, 1.0, 2.0, 4.0)
+#: A slam's hold and fade, in seconds, when the card does not say.
+SLAM_HOLD_S = 0.5
+SLAM_FADE_S = 1.5
 
 
 def song_seconds(text) -> float:
@@ -293,6 +299,8 @@ class ShowRunner:
                 continue
             if cue.do == "fade":
                 continue        # to black: below, over the flash; to a look: sections
+            if cue.do == "slam":
+                continue        # below, over the flash
             if cue.until is None or not (cue.at <= t < cue.until):
                 continue
             x = (t - cue.at) / max(cue.until - cue.at, 1e-3)
@@ -328,6 +336,20 @@ class ShowRunner:
             self._flash *= math.exp(-dt / FLASH_TAU_S)
         else:
             self._flash = 0.0
+
+        # A slam goes over the flash and the blackout it usually follows.
+        for cue in card.cues:
+            if cue.do != "slam" or t < cue.at:
+                continue
+            hold = float(cue.raw.get("hold", SLAM_HOLD_S))
+            fade = float(cue.raw.get("fade", SLAM_FADE_S))
+            x = clamp((t - cue.at - hold) / max(fade, 1e-3))
+            k = 1.0 - x * x * (3.0 - 2.0 * x)
+            if k <= 0.0:
+                continue
+            group = self.patch.group(cue.raw.get("fixtures", "bass"))
+            # Every emitter stays full; the dimmer does the fade.
+            each(group, lambda em: Emission(WHITE, k, 0.0, em.uv, 1.0, boost=1.0))
 
         # A fade to black takes everything down with it, the last hit included.
         for cue in card.cues:

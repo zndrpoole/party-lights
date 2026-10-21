@@ -25,5 +25,5 @@ fixtures:
   - id: accent
     profile: zq01430
     address: 85
-    groups: [accent, uv]
+    groups: [accent, uv, bass]   # bass: follows the kick; see the engine's _bass_wash
     label: "RGBWA+UV Accent"

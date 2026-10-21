@@ -71,6 +71,27 @@ WHITE = (1.0, 1.0, 1.0)
 #: the current look's colours, then settles into the new look over about 1.5 s.
 DROP_FLASH_TAU_S = 0.45
 
+#: The accent is a big wash over the whole yard, so it follows the bass as a
+#: slow swell rather than flashing on every hit the way the PARs may. A kick
+#: snaps it up to a level set by how hard the hit was, it holds there, then it
+#: fades back to a dim floor. A kick during the hold or fade lifts it again
+#: from wherever it is, so a steady four-on-the-floor reads as a pumping wash,
+#: never a flicker. See _bass_wash().
+#:
+#: With a tempo the hold and fade are fractions of a beat, so the wash has
+#: room to fall before the next kick: on the live rig at 130 BPM, fixed times
+#: of 0.35 s + 1.2 s kept it pinned at full. They never go below the floors
+#: below, so a fast track still swells rather than blinks; without a tempo
+#: the fixed times are used.
+BASS_PEAK_MIN = 0.7
+BASS_HOLD_S = 0.35
+BASS_FADE_S = 1.2
+BASS_HOLD_BEATS = 0.25
+BASS_FADE_BEATS = 1.0
+BASS_MIN_HOLD_S = 0.08
+BASS_MIN_FADE_S = 0.35
+BASS_FLOOR = 0.12
+
 #: Thresholds on *sustained* energy, not instantaneous energy.
 #:
 #: This distinction caused a real bug. FeatureFrame.energy is peak-normalised
@@ -179,6 +200,11 @@ class Engine:
         self._smoothed: dict[str, tuple[float, float]] = {}
         #: The drop hit, 0..1, decaying. See DROP_FLASH_TAU_S.
         self._flash = 0.0
+        #: The accent's bass wash: last hit's level and seconds since it.
+        self._bass_peak = 0.0
+        self._bass_age = 0.0
+        self._bass_hold = BASS_HOLD_S
+        self._bass_fade = BASS_FADE_S
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -558,6 +584,51 @@ class Engine:
                                   em.emitter_bias)
         return out
 
+    def _bass_wash(self, emissions: dict[str, Emission], music: MusicState, pal,
+                   dt: float) -> dict[str, Emission]:
+        """Drive the bass lights' brightness from the kick: hit, hold, fade.
+
+        The bass lights are the `bass` group in rig.yaml -- the accent today.
+
+        Replaces whatever brightness the look gave the accent and drops its
+        strobe, but keeps the look's colour and UV. After smoothing, which
+        would otherwise stretch the attack. While the music is silent the look
+        has the accent back, so idle looks still breathe.
+        """
+        accents = self.patch.group("bass")
+        if not accents:
+            return emissions
+        self._bass_age += dt
+        if music.onset("kick"):
+            strength = music.frame.onset_strength.get("kick", 0.0)
+            peak = BASS_PEAK_MIN + (1.0 - BASS_PEAK_MIN) * clamp(strength)
+            # A softer kick mid-fade must not dip a wash still above it.
+            self._bass_peak = max(peak, self._bass_level())
+            self._bass_age = 0.0
+            if music.tempo_locked and music.bpm > 0:
+                beat_s = 60.0 / music.bpm
+                self._bass_hold = min(BASS_HOLD_S, max(BASS_MIN_HOLD_S, BASS_HOLD_BEATS * beat_s))
+                self._bass_fade = min(BASS_FADE_S, max(BASS_MIN_FADE_S, BASS_FADE_BEATS * beat_s))
+            else:
+                self._bass_hold, self._bass_fade = BASS_HOLD_S, BASS_FADE_S
+        if music.silent:
+            return emissions
+        level = BASS_FLOOR + (1.0 - BASS_FLOOR) * self._bass_level()
+        out = dict(emissions)
+        for f in accents:
+            em = emissions.get(f.fid, BLACK)
+            rgb = em.rgb if max(em.rgb) > 0.0 else pal.at(0)
+            out[f.fid] = Emission(rgb, level, 0.0, em.uv, em.emitter_bias)
+        return out
+
+    def _bass_level(self) -> float:
+        """The wash's level now, 0..1: the last peak, held, then eased out."""
+        age = self._bass_age - self._bass_hold
+        if age <= 0.0:
+            return self._bass_peak
+        x = clamp(age / self._bass_fade)
+        return self._bass_peak * (1.0 - x * x * (3.0 - 2.0 * x))
+
     def _smooth(self, emissions: dict[str, Emission], dt: float) -> dict[str, Emission]:
         """Fast attack, slow release on brightness, per fixture.
 
@@ -667,12 +738,14 @@ class Engine:
             if level < 1.0:
                 emissions = {fid: em.with_intensity(level) for fid, em in emissions.items()}
             emissions = self._smooth(emissions, dt)
+            emissions = self._bass_wash(emissions, music, pal, dt)
             # Cues after smoothing, like the arc's cut: a one-beat blackout
             # must be dark at once, not fading over the look's release.
             emissions = self.show.shade(emissions, state.vibe, dt, state.max_strobe_seconds)
         else:
             emissions = self._arc_shape(emissions)
             emissions = self._smooth(emissions, dt)
+            emissions = self._bass_wash(emissions, music, pal, dt)
             # The drop hit goes after smoothing: through the attack it never
             # reached full (byte 146 of 255 on the live rig), because it was
             # already decaying while the smoother rose. Its own decay is the fade.

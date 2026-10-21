@@ -870,3 +870,55 @@ def test_fixture_endpoint_rejects_malformed_rgb(client):
 def test_group_endpoint_applies_to_a_whole_group(client):
     resp = client.post("/api/fixtures", json={"group": "pars", "active": True})
     assert len(resp.get_json()["applied"]) == 12
+
+
+# -- the accent's bass wash ---------------------------------------------------
+#
+# The accent is a large wash; it must swell with the bass -- hit, hold, fade --
+# not flash on and off with every short hit the look makes.
+
+def test_accent_hits_holds_then_fades_on_the_bass(rig):
+    from partylights.engine.engine import BASS_FADE_S, BASS_FLOOR, BASS_HOLD_S
+    from partylights.fixtures.color import Emission
+    patch, engine = rig[0], rig[3]
+    accent = patch.group("accent")[0].fid
+    pal = palettes.get("ember")
+    levels = []
+    for i in range(int((BASS_HOLD_S + BASS_FADE_S + 0.3) * 100)):
+        # The look flashes the accent on and off; the wash must ignore that.
+        look = {accent: Emission((1.0, 0.0, 0.0), float(i % 2), 1.0, 0.0, 0.0)}
+        out = engine._bass_wash(look, _hit(i / 100, "kick" if i == 0 else None), pal, 0.01)
+        levels.append(out[accent].intensity)
+        assert out[accent].strobe == 0.0 and out[accent].rgb == (1.0, 0.0, 0.0)
+    hold = int(BASS_HOLD_S * 100) - 2
+    assert levels[0] > 0.7
+    assert all(abs(l - levels[0]) < 1e-6 for l in levels[:hold])  # held, not flashed
+    assert BASS_FLOOR < levels[hold + int(BASS_FADE_S * 50)] < levels[0]  # fading
+    assert all(b <= a + 1e-9 for a, b in zip(levels, levels[1:]))  # never flickers up
+    assert abs(levels[-1] - BASS_FLOOR) < 1e-6                     # rests at the floor
+
+
+def test_accent_wash_leaves_pars_and_silence_alone(rig):
+    from partylights.fixtures.color import Emission
+    patch, engine = rig[0], rig[3]
+    par, accent = patch.group("pars")[0].fid, patch.group("accent")[0].fid
+    look = {par: Emission((0.0, 1.0, 0.0), 0.3, 0.0, 0.0, 0.0),
+            accent: Emission((0.0, 0.0, 1.0), 0.4, 0.0, 0.0, 0.0)}
+    out = engine._bass_wash(look, _hit(0.0, "kick"), palettes.get("ember"), 0.01)
+    assert out[par] == look[par]
+    assert engine._bass_wash(look, silent_state(), palettes.get("ember"), 0.01) == look
+
+
+def test_accent_wash_falls_between_kicks_at_dance_tempo(rig):
+    # Live bug: at 130 BPM fixed hold + fade times kept the wash pinned at full.
+    from dataclasses import replace
+    patch, engine = rig[0], rig[3]
+    accent = patch.group("accent")[0].fid
+    beat = int(round(100 * 60 / 130))
+    levels = []
+    for i in range(beat * 8):
+        m = replace(_hit(i / 100, "kick" if i % beat == 0 else None), bpm=130.0, tempo_locked=True)
+        levels.append(engine._bass_wash({}, m, palettes.get("ember"), 0.01)[accent].intensity)
+    last = levels[-beat:]
+    assert max(last) > 0.7 and min(last) < 0.45   # a visible pump every beat
+    assert sum(l >= max(last) - 1e-6 for l in last) >= 8   # each hit still holds
