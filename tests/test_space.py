@@ -29,6 +29,8 @@ from partylights.web.server import create_app
 
 #: The real rig's wash fixtures in patch order (par1..par12, then the fascia).
 PARS = [f.fid for f in load_patch(DEFAULT_RIG).group("pars")]
+#: The ring's first and last PAR in patch order, and one near the middle.
+FIRST, LAST, MID = PARS[0], PARS[-1], PARS[len(PARS) // 2]
 
 
 @pytest.fixture
@@ -75,15 +77,28 @@ def test_layout_changes_the_axes(patch):
     space = Space(patch)
     # Reverse the room: par1 now on the right.
     space.set_layout({fid: {"x": 0.9 - 0.8 * i / (len(PARS) - 1), "y": 0.5} for i, fid in enumerate(PARS)})
-    assert space.along("par1", 0) == 1.0 and space.along(PARS[-1], 0) == 0.0
+    assert space.along(FIRST, 0) == 1.0 and space.along(PARS[-1], 0) == 0.0
     # Patch order (the chase path) does not move with the layout.
-    assert space.spot("par1").path == 0.0
+    assert space.spot(FIRST).path == 0.0
+
+
+def test_halves_hold_as_many_pars_however_the_ring_is_bunched(patch):
+    # Like the yard: most of the ring west of centre, a short run on the east.
+    n = len(PARS)
+    east = n // 3
+    layout = {fid: {"x": 0.1 + 0.3 * i / (n - east), "y": 0.2 + 0.6 * i / n}
+              for i, fid in enumerate(PARS[:n - east])}
+    layout.update({fid: {"x": 0.9, "y": 0.2 + 0.6 * i / east}
+                   for i, fid in enumerate(PARS[n - east:])})
+    space = Space(patch, layout)
+    sides = [space.spot(f).side for f in PARS]
+    assert sides.count(0) == sides.count(1) == n // 2
 
 
 def test_unknown_and_malformed_layout_entries_are_ignored(patch):
     space = Space(patch)
-    space.set_layout({"ghost": {"x": 0.1, "y": 0.1}, "par1": {"x": "left"}})
-    assert space.spot("par1").x == pytest.approx(0.07)
+    space.set_layout({"ghost": {"x": 0.1, "y": 0.1}, FIRST: {"x": "left"}})
+    assert space.spot(FIRST).x == pytest.approx(0.07)
 
 
 def test_engine_shares_one_space_with_every_look(patch):
@@ -91,7 +106,7 @@ def test_engine_shares_one_space_with_every_look(patch):
     engine = Engine(patch, universe, EngineState())
     engine.set_layout(circle())
     assert all(look.space is engine.space for look in engine.looks.values())
-    assert engine.looks["rotor"].space.spot("par4").y > 0.8
+    assert engine.looks["rotor"].space.spot(PARS[3]).y > 0.8
 
 
 def test_saving_a_layout_in_the_stage_view_reaches_the_engine(patch, tmp_path):
@@ -113,7 +128,7 @@ def test_saving_a_layout_in_the_stage_view_reaches_the_engine(patch, tmp_path):
 def test_sweep_starts_at_the_left_and_turns_at_the_right(patch):
     space = Space(patch)
     sweep = Travel(axis="along", beats=8, pingpong=True)
-    assert brightest(sweep.render(ctx(space, music(beat=0)), PARS)) == "par1"
+    assert brightest(sweep.render(ctx(space, music(beat=0)), PARS)) == FIRST
     assert brightest(sweep.render(ctx(space, music(beat=4)), PARS)) == PARS[-1]
 
 
@@ -137,15 +152,15 @@ def test_alternate_trades_halves_on_the_beat_clock(patch):
     alt = Alternate(axis="side", beats=2, low=0.1)
     first = alt.render(ctx(space, music(beat=0.5)), PARS)
     later = alt.render(ctx(space, music(beat=2.5)), PARS)
-    assert first["par1"] == 1.0 and first["par12"] == 0.1
-    assert later["par1"] == 0.1 and later["par12"] == 1.0
+    assert first[FIRST] == 1.0 and first[LAST] == 0.1
+    assert later[FIRST] == 0.1 and later[LAST] == 1.0
 
 
 def test_split_puts_partner_colours_on_each_half(patch):
     space = Space(patch)
     c = Split(axis="side").render(ctx(space, music()), PARS)
     pal = palettes.get("halloween-deep")
-    assert c["par1"] == pal.at(0) and c["par12"] == pal.at(2)
+    assert c[FIRST] == pal.at(0) and c[LAST] == pal.at(2)
 
 
 def test_ripple_leaves_the_centre_then_reaches_the_ends(patch):
@@ -155,17 +170,17 @@ def test_ripple_leaves_the_centre_then_reaches_the_ends(patch):
     early = ripple.render(ctx(space, music(), dt=0.05), PARS)
     for _ in range(8):
         late = ripple.render(ctx(space, music(), dt=0.05), PARS)
-    assert early["par6"] > early["par1"]
-    assert late["par1"] > late["par6"]
+    assert early[MID] > early[FIRST]
+    assert late[FIRST] > late[MID]
 
 
 def test_knockout_cuts_on_the_kick_and_recovers(patch):
     space = Space(patch)
     ko = Knockout(depth=0.9, decay_s=0.2)
-    assert ko.render(ctx(space, music()), PARS)["par1"] == 1.0
-    assert ko.render(ctx(space, music(kick=True)), PARS)["par1"] == pytest.approx(0.1)
+    assert ko.render(ctx(space, music()), PARS)[FIRST] == 1.0
+    assert ko.render(ctx(space, music(kick=True)), PARS)[FIRST] == pytest.approx(0.1)
     for _ in range(40):
-        level = ko.render(ctx(space, music(), dt=0.01), PARS)["par1"]
+        level = ko.render(ctx(space, music(), dt=0.01), PARS)[FIRST]
     assert level > 0.9
 
 
@@ -181,7 +196,7 @@ def test_scene_moves_with_the_layout_saved_in_the_engine(patch):
     look.reset()
     after = look.render(music(beat=0), pal, 0.01)
     levels = lambda em: {fid: em[fid].intensity for fid in PARS}
-    assert brightest(levels(before)) == "par1"
+    assert brightest(levels(before)) == FIRST
     assert brightest(levels(after)) == PARS[-1]
 
 

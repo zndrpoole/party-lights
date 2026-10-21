@@ -39,7 +39,8 @@ class Spot:
     angle: float
     #: 0..1 from the centroid to the PAR furthest from it.
     radius: float
-    #: 0 left of the centroid, 1 right of it.
+    #: 0 on the left half of the PARs, 1 on the right: split at their median x,
+    #: so both halves hold as many PARs.
     side: int
 
 
@@ -89,6 +90,12 @@ class Space:
         cx = sum(p[0] for p in mpts) / len(mpts)
         cy = sum(p[1] for p in mpts) / len(mpts)
         reach = max((math.hypot(x - cx, y - cy) for x, y in mpts), default=0.0) or 1.0
+        # Halves split at the PARs' median x, not their centroid, so each half
+        # holds as many PARs as the other. A ring round a lawn with a cluster
+        # on one side split 8 against 4 at the centroid, which made every
+        # call-and-response a big half answered by a small one.
+        xs = sorted(p[0] for p in mpts)
+        mid_x = (xs[(len(xs) - 1) // 2] + xs[len(xs) // 2]) / 2.0
         rank = {fid: i for i, fid in enumerate(movers)}
         n = len(movers)
 
@@ -101,7 +108,7 @@ class Space:
                 x=x, y=y, path=path,
                 angle=(math.atan2(y - cy, x - cx) / (2.0 * math.pi)) % 1.0,
                 radius=min(1.0, math.hypot(x - cx, y - cy) / reach),
-                side=0 if x < cx else 1,
+                side=0 if x < mid_x else 1,
             )
         self._movers = movers
         self._centre = (cx, cy)

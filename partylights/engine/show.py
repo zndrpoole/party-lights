@@ -16,7 +16,8 @@ a jittery position reading does not make the show stutter.
 
 Cues, all in song time:
 
-    blackout  [at, until]   PARs and the accent's colour out; uv: off kills UV too
+    blackout  [at, until]   PARs, par1/par2 and the accent's colour out; uv: off
+                            kills UV too
     flash     at            everything to full (white by default), decaying fast
     slam      at            the bass lights (group: bass) to every emitter at full,
                             held for `hold` s then eased out over `fade` s; pair
@@ -280,6 +281,8 @@ class ShowRunner:
         out = dict(emissions)
         pars = self.patch.group("pars") or self.patch.ordered()
         accents = self.patch.group("accent")
+        # The RGB bass lights go dark with the PARs; the accent keeps its UV.
+        dark = pars + [f for f in self.patch.group("bass") if f not in accents and f not in pars]
         vibe = self.effective_vibe(host_vibe)
 
         def each(fixtures, fn):
@@ -305,7 +308,7 @@ class ShowRunner:
                 continue
             x = (t - cue.at) / max(cue.until - cue.at, 1e-3)
             if cue.do == "blackout":
-                each(pars, lambda em: Emission(em.rgb, 0.0, 0.0, 0.0, em.emitter_bias))
+                each(dark, lambda em: Emission(em.rgb, 0.0, 0.0, 0.0, em.emitter_bias))
                 keep_uv = cue.raw.get("uv", True) not in (False, "off")
                 each(accents, lambda em: Emission(em.rgb, 0.0, 0.0,
                                                   em.uv if keep_uv else 0.0, em.emitter_bias))

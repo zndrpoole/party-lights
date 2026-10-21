@@ -13,15 +13,26 @@
 #
 # `position` is assigned automatically in patch order and is what chases use as
 # physical order — so list the PARs in the order they are actually arranged
-# around the room, left to right. Getting this wrong makes a chase look like
-# random flashing instead of movement.
+# around the room. Getting this wrong makes a chase look like random flashing
+# instead of movement.
+#
+# Two roles. The `pars` group is the ring round the lawn that carries the
+# movement, in this order: under the palm (par4, par5), the NW wall west to
+# east (par6-8), the east wall north to south (par9-12), then the house fascia
+# south to north (par13-15) back toward the palm. The `bass` group is the
+# scenery washes: par1, par2 and the accent.
 
 fixtures:
+  # par1 and par2 are bass lights, not part of the ring of PARs: par1 on the
+  # ground off the house's NE corner washing up its face, par2 under the palm
+  # into the NE pine. With the accent they are the three biggest washes in the
+  # yard, triangulated round it, and the engine drives them together off the
+  # low end (see _bass_wash). Looks colour them like the accent.
   - id: par
     profile: zq01104
     count: 2
     address: 1          # par1, par2 at 1, 8
-    groups: [pars, rgb]
+    groups: [bass, rgb]
     label: "PAR"
 
   # par3 (address 15) is out of the show for now: it's set off to the side.
@@ -43,7 +54,7 @@ fixtures:
   - id: accent
     profile: zq01430
     address: 85
-    groups: [accent, uv, bass]   # bass: follows the kick; see the engine's _bass_wash
+    groups: [accent, uv, bass]   # bass: with par1 and par2; see the engine's _bass_wash
     label: "RGBWA+UV Accent"
 
   # par13-15: on the fascia board of the house's east face, ~10 ft up. They

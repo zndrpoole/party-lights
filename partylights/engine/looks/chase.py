@@ -10,6 +10,10 @@ visible.
 Fixture order comes from `position` in rig.yaml, which is why that file asks you
 to list the PARs in the order they are physically arranged. Out of order, this
 look is just random flashing.
+
+The PARs make a closed ring round the lawn, so the head laps it rather than
+running to one end and bouncing back. It turns round on each colour change,
+when the head is back at the first fixture, so the reversal never jumps.
 """
 
 from __future__ import annotations
@@ -24,54 +28,53 @@ from .base import Look
 WIDTH = 1.9
 #: Residual brightness on fixtures the head has left.
 TAIL = 0.07
-#: Bars for one there-and-back. Was 1, which read as frantic at party tempos.
+#: Bars for one lap of the ring. Was 1 for a there-and-back on a line, which
+#: read as frantic at party tempos.
 BARS_PER_SWEEP = 2
-#: Seconds per there-and-back when there is no tempo lock.
+#: Seconds per lap when there is no tempo lock.
 FREE_RUN_S = 4.0
-#: Bars between colour changes: two full sweeps.
+#: Bars between colour changes, and between changes of direction: two laps.
 BARS_PER_COLOUR = 4
 
 
 class ChaseLook(Look):
     name = "chase"
     wildness = 0.75
-    description = "Bright head sweeping the room, locked to the beat"
+    description = "Bright head lapping the ring of PARs, locked to the beat"
     #: Output release. Short or long because the head should read as a light, not a smear.
     release_s = 0.20
+    #: The hit goes round the triangle as the head goes round the ring.
+    bass = "round"
     needs_tempo = True
 
     def __init__(self, patch):
         super().__init__(patch)
         self._pos = 0.0
-        self._bounce = 1
 
     def reset(self) -> None:
         self._pos = 0.0
-        self._bounce = 1
 
     def render(self, music, palette, dt):
         pars = self.pars
         n = max(1, len(pars))
 
         bar = music.beat_index // 4
-        # One full there-and-back every BARS_PER_SWEEP bars. Using the
-        # continuous bar phase (rather than stepping on beat events) is what
-        # makes the motion smooth and on time.
+        # One lap every BARS_PER_SWEEP bars. Using the continuous bar phase
+        # (rather than stepping on beat events) is what makes the motion
+        # smooth and on time.
         if music.tempo_locked:
-            sweep = ((bar % BARS_PER_SWEEP) + music.bar_phase) / BARS_PER_SWEEP
+            lap = ((bar % BARS_PER_SWEEP) + music.bar_phase) / BARS_PER_SWEEP
+            backwards = (bar // BARS_PER_COLOUR) % 2 == 1
         else:
             # No lock: free-run at an unhurried pace so the look still does
             # something sensible rather than freezing.
             self._pos += dt / FREE_RUN_S
-            sweep = self._pos % 1.0
+            lap = self._pos % 1.0
+            backwards = False
+        head = (1.0 - lap if backwards else lap) * n
 
-        # Ping-pong rather than wrapping: a head that jumps from the last
-        # fixture back to the first reads as a glitch in a line of lights.
-        tri = 2.0 * sweep if sweep < 0.5 else 2.0 * (1.0 - sweep)
-        head = tri * (n - 1)
-
-        # Colour steps every BARS_PER_COLOUR bars, on a sweep boundary, so a
-        # sweep keeps one colour for its whole travel.
+        # Colour steps every BARS_PER_COLOUR bars, on a lap boundary, so a lap
+        # keeps one colour all the way round.
         color = palette.at(bar // BARS_PER_COLOUR)
 
         # Hits widen the head, which makes the chase feel connected to the music
@@ -81,7 +84,8 @@ class ChaseLook(Look):
 
         out = {}
         for i, f in enumerate(pars):
-            d = abs(i - head)
+            d = abs(i - head) % n
+            d = min(d, n - d)           # round the ring, not across it
             level = math.exp(-(d * d) / (2.0 * width * width))
             out[f.fid] = Emission(
                 rgb=color,
@@ -89,12 +93,11 @@ class ChaseLook(Look):
             )
 
         for f in self.accents:
-            # The accent counter-moves: brightest when the head is mid-run, so
-            # it fills the gap at the turnarounds rather than competing.
-            fill = 1.0 - abs(tri - 0.5) * 2.0
+            # The accent holds the next colour; the engine passes the bass hit
+            # round the three scenery washes as the head laps (bass = "round").
             out[f.fid] = Emission(
                 rgb=palette.at(bar // BARS_PER_COLOUR + 1),
-                intensity=clamp(0.10 + 0.45 * fill),
+                intensity=0.35,
                 uv=0.1,
             )
         return out

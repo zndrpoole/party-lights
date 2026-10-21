@@ -82,6 +82,14 @@ def test_stop_is_dark_for_exactly_the_gap(show):
     assert all(e.intensity > 0 for e in pars(patch, at(runner, clock, 72.7)))
 
 
+def test_a_blackout_takes_par1_and_par2_with_the_pars(show):
+    # They left the `pars` group to be bass lights, but are still RGB washes
+    # a stop has to put out.
+    patch, runner, clock = show
+    out = at(runner, clock, 71.8)
+    assert out["par1"].intensity == out["par2"].intensity == 0
+
+
 def test_quarter_beat_of_dark_then_the_drop(show):
     patch, runner, clock = show
     assert all(e.intensity == 0 for e in pars(patch, at(runner, clock, 79.8)))

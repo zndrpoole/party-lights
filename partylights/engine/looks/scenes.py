@@ -24,6 +24,8 @@ class RotorScene(LayeredLook):
     description = "Two heads spinning round the centre of the rig, colour wheel underneath"
     needs_tempo = True
     release_s = 0.18
+    #: The hit goes round the triangle while the heads spin.
+    bass = "round"
     floor = 0.06
 
     def build(self):
@@ -47,6 +49,26 @@ class SweepScene(LayeredLook):
         return Stack(
             colour=Gradient(axis="along", spread=0.35, drift_bars=8),
             masks=[Travel(axis="along", beats=8, width=0.16, pingpong=True)],
+            accent=Accent(punch="snare"),
+        )
+
+
+class TideScene(LayeredLook):
+    name = "tide"
+    wildness = 0.6
+    description = "A wave rolling down the yard, north end to south and back"
+    needs_tempo = True
+    release_s = 0.25
+    floor = 0.08
+
+    # The yard is long north to south and the ring wraps it, so a wave down
+    # that axis washes over both long sides at once -- the east wall and the
+    # house fascia light together, level by level -- where the left-right
+    # sweep crosses the narrow width. Two bars each way, wider than the sweep.
+    def build(self):
+        return Stack(
+            colour=Gradient(axis="along", degrees=90, spread=0.4, drift_bars=16),
+            masks=[Travel(axis="along", degrees=90, beats=16, width=0.22, pingpong=True)],
             accent=Accent(punch="snare"),
         )
 
@@ -135,6 +157,8 @@ class DriftScene(LayeredLook):
     wildness = 0.2
     description = "Slow drifting colour clouds, breathing with the music — no hits"
     release_s = 0.6
+    #: No hits: the scenery swells under the drifting clouds.
+    bass = "swell"
     floor = 0.12
 
     def build(self):
@@ -160,5 +184,5 @@ class BeamsScene(LayeredLook):
         )
 
 
-SCENES = (RotorScene, SweepScene, RippleScene, PingPongScene, CallResponseScene,
+SCENES = (RotorScene, SweepScene, TideScene, RippleScene, PingPongScene, CallResponseScene,
           StepperScene, KnockoutScene, DriftScene, BeamsScene)
