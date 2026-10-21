@@ -67,19 +67,25 @@ def build_driver(settings: Settings, *, override: str | None = None):
         from .dmx.null import NullDriver
         return NullDriver()
 
+    # Real hardware is wrapped so an unplugged adapter is retried, not fatal.
+    from .dmx.reconnect import ReconnectingDriver
+    retry_s = float(settings.get("dmx.retry_seconds", 2.0))
+
     if kind == "serial":
         from .dmx.opendmx_serial import OpenDmxSerialDriver
         port = settings.get("dmx.port")
         if not port:
             raise ValueError("dmx.driver is 'serial' but dmx.port is not set")
-        return OpenDmxSerialDriver(
+        return ReconnectingDriver(OpenDmxSerialDriver(
             port=port,
             break_mode=settings.get("dmx.break_mode", "ioctl"),
-        )
+        ), retry_s=retry_s)
 
     if kind == "ftdi":
         from .dmx.opendmx_ftdi import OpenDmxFtdiDriver
-        return OpenDmxFtdiDriver(serial_number=settings.get("dmx.serial_number") or None)
+        return ReconnectingDriver(
+            OpenDmxFtdiDriver(serial_number=settings.get("dmx.serial_number") or None),
+            retry_s=retry_s)
 
     raise ValueError(f"unknown dmx.driver {kind!r} — expected serial, ftdi or null")
 

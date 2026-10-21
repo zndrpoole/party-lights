@@ -166,6 +166,8 @@ class Universe:
                 "frozen": self._frozen,
                 "priority_boosted": self._priority_boosted,
                 "driver": self.driver.describe(),
+                # Only drivers that can lose their hardware report a link.
+                "link": self.driver.status() if hasattr(self.driver, "status") else None,
             }
 
     # -- lifecycle --------------------------------------------------------
