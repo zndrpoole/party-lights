@@ -137,6 +137,13 @@ def _clean_markers(spec) -> list:
     return out
 
 
+def _clean_center(spec) -> dict:
+    """Validate /yard's view centre: {x, y}, the point the camera orbits."""
+    if not isinstance(spec, dict):
+        raise ValueError("center must be {x, y}")
+    return {"x": _coord(spec["x"]), "y": _coord(spec["y"])}
+
+
 def _clean_trees(spec) -> dict:
     """Validate /yard's tree settings: {opacity, items: [{hidden, scale}]}."""
     if not isinstance(spec, dict) or not isinstance(spec.get("items", []), list):
@@ -459,13 +466,15 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         see-through they are; "areas" and "markers" hold the shapes and pins
         drawn on the ground (backyard boundary, where to light, where not to);
         "layouts" holds named placements to switch between, and "layout" the
-        one last applied.
+        one last applied; "center" is a view centre the owner set, absent for
+        the default (the middle of the backyard).
         """
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"error": "expected {fixture_id: {x, y, h, ax, ay, ah, beam, throw}}"}), 400
         yard = {}
         cleaners = {"trees": _clean_trees, "areas": _clean_areas, "markers": _clean_markers,
+                    "center": _clean_center,
                     "layouts": clean_layouts,
                     "layout": lambda v: str(v)[:YARD_NAME_LEN]}
         for key, clean in cleaners.items():

@@ -141,6 +141,19 @@ def test_yard_tree_settings_are_clamped_and_saved(patch, tmp_path):
     assert client.post("/api/yard", json={"trees": {"items": [{"scale": "big"}]}}).status_code == 400
 
 
+def test_yard_view_centre_is_validated_and_saved(patch, tmp_path):
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
+                        cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    saved = client.post("/api/yard", json={"center": {"x": 9.456, "y": 400}}).get_json()
+    assert saved == {"center": {"x": 9.46, "y": 100.0}}
+    assert client.get("/api/yard").get_json() == saved
+    # Left out of a save, it is gone: the page falls back to the yard's middle.
+    assert client.post("/api/yard", json={}).get_json() == {}
+    for bad in ({"center": [1, 2]}, {"center": {"x": 1}}, {"center": {"x": "a", "y": 1}}):
+        assert client.post("/api/yard", json=bad).status_code == 400
+
+
 def test_yard_areas_and_markers_are_validated_and_saved(patch, tmp_path):
     client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
                         cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",

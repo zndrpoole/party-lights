@@ -134,19 +134,67 @@ controls.maxPolarAngle = Math.PI / 2 - .02;
 controls.minDistance = 4;
 controls.maxDistance = 160;
 
+/* Where the camera orbits. By default the middle of the backyard: the drawn
+   boundary's centroid once there is one, else YARD_MIDDLE. "Set centre" moves
+   it to a clicked spot, saved through /api/yard as `center`; "Auto centre"
+   goes back to the default. Model metres, [east, north]. */
+const YARD_MIDDLE = [9.5, 13];
+let centre = null;          // the owner's centre, or null for the default
+let boundaryMiddle = null;  // centroid of the drawn boundary; see redrawAreas()
+let settingCentre = false;
+function viewCentre() { return centre || boundaryMiddle || YARD_MIDDLE; }
+
 const VIEWS = {
-  home: [[-30, 22, 16], [-1, 1.5, -8]],
-  top: [[0, 78, -9.4], [0, 0, -10]],
-  street: [[-48, 4.5, -3], [0, 2.5, -9]],
-  yard: [[5, 3.2, 2.2], [10, 2, -20]],
+  home: (c) => [[c[0] - 29, 20.5, -c[1] + 24], [c[0], 1.5, -c[1]]],
+  top: (c) => [[c[0], 78, -c[1] + .6], [c[0], 0, -c[1]]],
+  street: () => [[-48, 4.5, -3], [0, 2.5, -9]],
+  yard: () => [[5, 3.2, 2.2], [10, 2, -20]],
 };
 function setView(k) {
-  const [p, t] = VIEWS[k];
+  const [p, t] = VIEWS[k](viewCentre());
   camera.position.set(...p);
   controls.target.set(...t);
   controls.update();
 }
 setView("home");
+
+// A faint ring on the ground where the view centre is.
+const centreMark = new THREE.Mesh(new THREE.RingGeometry(.45, .6, 40).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0x9ad1ff, transparent: true, opacity: .55, depthWrite: false }));
+centreMark.renderOrder = 2;
+scene.add(centreMark);
+function placeCentreMark() {
+  const c = viewCentre();
+  centreMark.position.set(c[0], .07, -c[1]);
+}
+placeCentreMark();
+
+/* Slide the view to the current centre, keeping the camera's angle and
+   distance, so moving the centre never throws the view somewhere else. */
+function recentre() {
+  const c = viewCentre();
+  const t = new THREE.Vector3(c[0], controls.target.y, -c[1]);
+  camera.position.add(t.clone().sub(controls.target));
+  controls.target.copy(t);
+  controls.update();
+  placeCentreMark();
+  $("b-centre-auto").hidden = !centre;
+}
+
+function polygonMiddle(points) {
+  // Area centroid (shoelace); the vertex average if the polygon is degenerate.
+  let a = 0, cx = 0, cy = 0;
+  points.forEach(([x0, y0], i) => {
+    const [x1, y1] = points[(i + 1) % points.length];
+    const k = x0 * y1 - x1 * y0;
+    a += k; cx += (x0 + x1) * k; cy += (y0 + y1) * k;
+  });
+  if (Math.abs(a) < 1e-6) {
+    return [points.reduce((s, p) => s + p[0], 0) / points.length,
+            points.reduce((s, p) => s + p[1], 0) / points.length];
+  }
+  return [+(cx / (3 * a)).toFixed(2), +(cy / (3 * a)).toFixed(2)];
+}
 
 const pick = [];
 const mat = (c, r = .9) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: 0 });
@@ -548,7 +596,8 @@ function save() {
   saveTimer = setTimeout(async () => {
     try {
       const r = await post("/api/yard", { ...placement(), trees: treeSettings(), ...areaSettings(),
-                                          layouts, layout: activeLayout });
+                                          layouts, layout: activeLayout,
+                                          ...(centre ? { center: { x: centre[0], y: centre[1] } } : {}) });
       $("s-saved").textContent = r.ok ? "Placement saved." : "Save failed.";
     } catch {
       $("s-saved").textContent = "Save failed: is the app running?";
@@ -808,6 +857,9 @@ function redrawAreas() {
   markers.forEach((m) => { m.obj = markerObject(m); areaG.add(m.obj); });
   if (draft) { draft.obj = areaObject(draft, true); areaG.add(draft.obj); }
   buildAreaList();
+  const b = areas.find((a) => a.kind === "boundary");
+  boundaryMiddle = b ? polygonMiddle(b.points) : null;
+  placeCentreMark();
 }
 
 function areaSettings() {
@@ -904,7 +956,16 @@ function groundClick(p) {
   areaMode();
 }
 
+function centreMode(on) {
+  settingCentre = on;
+  $("b-centre").classList.toggle("on", on);
+  $("b-centre").textContent = on ? "Click the ground…" : "Set centre";
+}
+$("b-centre").onclick = () => centreMode(!settingCentre);
+$("b-centre-auto").onclick = () => { centre = null; recentre(); save(); };
+
 document.addEventListener("keydown", (e) => {
+  if (settingCentre && e.key === "Escape") { centreMode(false); e.preventDefault(); return; }
   if (!draft && !placingMarker) return;
   if (e.key === "Escape") { cancelDraft(); e.preventDefault(); }
   else if (e.key === "Enter" && draft) { finishDraft(); e.preventDefault(); }
@@ -987,6 +1048,13 @@ cv.addEventListener("pointerup", (e) => {
   if (moved > 5) return;
   const h = hit(e);
   if (!h) return;
+  if (settingCentre) {
+    centre = [+h.point.x.toFixed(2), +(-h.point.z).toFixed(2)];
+    centreMode(false);
+    recentre();
+    save();
+    return;
+  }
   if (draft || placingMarker) { groundClick(h.point); return; }
   if (!pickMode) {
     // A plain click on a fixture selects it.
@@ -1065,6 +1133,11 @@ function resize() {
   applyTreeSettings(savedYard.trees);
   syncTrees();
   applyAreaSettings(savedYard);
+  const c = savedYard.center;
+  centre = c && Number.isFinite(+c.x) && Number.isFinite(+c.y) ? [+c.x, +c.y] : null;
+  setView("home");
+  placeCentreMark();
+  $("b-centre-auto").hidden = !centre;
   layouts = savedYard.layouts || {};
   activeLayout = savedYard.layout || "";
   buildLayouts();

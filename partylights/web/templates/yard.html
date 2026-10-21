@@ -36,6 +36,7 @@
   .views { position: absolute; left: 10px; top: 10px; display: flex; gap: 6px;
     flex-wrap: wrap; z-index: 2; max-width: calc(100% - 70px); }
   .views button { background: rgba(8, 13, 19, .8); min-height: 32px; padding: 4px 10px; font-size: 13px; }
+  .views button.on { background: var(--accent); border-color: var(--accent); color: #140a02; }
 
   .console { overflow: auto; min-height: 0; padding: 14px; margin: 0; }
   .console section { border-top: 1px solid var(--line); padding: 12px 0; }
@@ -107,6 +108,8 @@
     <div class="views">
       <button data-view="home">Reset</button><button data-view="top">Top</button>
       <button data-view="street">Street</button><button data-view="yard">Yard</button>
+      <button id="b-centre" title="Click, then click the ground: the view orbits there">Set centre</button>
+      <button id="b-centre-auto" hidden title="Back to the middle of the backyard">Auto centre</button>
     </div>
     <div class="ov" id="compass"><div id="needle"></div></div>
     <div class="ov" id="readout">Hover the ground for coordinates</div>
