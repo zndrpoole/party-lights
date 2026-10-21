@@ -232,11 +232,12 @@ def test_patch_rejects_running_past_the_universe(rgb_profile):
 
 def test_real_rig_loads_and_matches_the_documented_address_map():
     patch = load_patch(DEFAULT_RIG)
-    assert len(patch) == 13
-    assert patch.max_channel == 94
+    assert len(patch) == 16
+    assert patch.max_channel == 115
     expected = [1, 8, 15, 22, 29, 36, 43, 50, 57, 64, 71, 78]
     assert [patch.by_id[f"par{i + 1}"].address for i in range(12)] == expected
     assert patch.by_id["accent"].address == 85
+    assert [patch.by_id[f"par{i}"].address for i in (13, 14, 15)] == [95, 102, 109]
 
 
 def test_real_rig_pins_the_par_mode_channel_to_zero():

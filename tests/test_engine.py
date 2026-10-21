@@ -215,7 +215,7 @@ def test_bench_api_validates_input(rig):
     client = create_app(patch=patch, universe=universe, state=state, engine=engine,
                         cues=cues, tuning_path=Path("/nonexistent/tuning.json")).test_client()
     ok = client.post("/api/bench", json={"group": "pars", "values": {"dimmer": 14}})
-    assert ok.status_code == 200 and len(ok.get_json()["held"]) == 12
+    assert ok.status_code == 200 and len(ok.get_json()["held"]) == 15
     assert client.post("/api/bench", json={"ids": ["par1"], "values": {"strobe": 9}}).status_code == 400
     assert client.post("/api/bench", json={"ids": ["par1"], "values": {"dimmer": 300}}).status_code == 400
     assert client.post("/api/bench/release", json={}).get_json() == {"held": {}}
@@ -833,8 +833,8 @@ def test_pages_render(client):
 
 def test_rig_endpoint_describes_the_whole_rig(client):
     data = client.get("/api/rig").get_json()
-    assert len(data["fixtures"]) == 13
-    assert data["max_channel"] == 94
+    assert len(data["fixtures"]) == 16
+    assert data["max_channel"] == 115
     accent = next(f for f in data["fixtures"] if f["id"] == "accent")
     assert accent["has_uv"]
     assert "amber" in accent["emitters"]
@@ -869,7 +869,7 @@ def test_fixture_endpoint_rejects_malformed_rgb(client):
 
 def test_group_endpoint_applies_to_a_whole_group(client):
     resp = client.post("/api/fixtures", json={"group": "pars", "active": True})
-    assert len(resp.get_json()["applied"]) == 12
+    assert len(resp.get_json()["applied"]) == 15
 
 
 # -- the accent's bass wash ---------------------------------------------------

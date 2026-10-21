@@ -27,7 +27,8 @@ from partylights.engine.space import Space
 from partylights.engine.state import EngineState
 from partylights.web.server import create_app
 
-PARS = [f"par{i}" for i in range(1, 13)]
+#: The real rig's wash fixtures in patch order (par1..par12, then the fascia).
+PARS = [f.fid for f in load_patch(DEFAULT_RIG).group("pars")]
 
 
 @pytest.fixture
@@ -52,10 +53,10 @@ def brightest(levels):
     return max(levels, key=levels.get)
 
 
-def circle(n=12):
+def circle(n=len(PARS)):
     """PARs in a ring, par1 at the right going clockwise on screen."""
-    return {f"par{i + 1}": {"x": 0.5 + 0.4 * math.cos(2 * math.pi * i / n),
-                            "y": 0.5 + 0.4 * math.sin(2 * math.pi * i / n)}
+    return {PARS[i]: {"x": 0.5 + 0.4 * math.cos(2 * math.pi * i / n),
+                 "y": 0.5 + 0.4 * math.sin(2 * math.pi * i / n)}
             for i in range(n)}
 
 
@@ -66,14 +67,15 @@ def test_default_layout_runs_left_to_right(patch):
     xs = [space.along(fid, 0) for fid in PARS]
     assert xs[0] == 0.0 and xs[-1] == 1.0
     assert xs == sorted(xs)
-    assert [space.spot(f).side for f in PARS] == [0] * 6 + [1] * 6
+    half = len(PARS) // 2
+    assert [space.spot(f).side for f in PARS] == [0] * half + [1] * (len(PARS) - half)
 
 
 def test_layout_changes_the_axes(patch):
     space = Space(patch)
     # Reverse the room: par1 now on the right.
-    space.set_layout({fid: {"x": 0.9 - 0.8 * i / 11, "y": 0.5} for i, fid in enumerate(PARS)})
-    assert space.along("par1", 0) == 1.0 and space.along("par12", 0) == 0.0
+    space.set_layout({fid: {"x": 0.9 - 0.8 * i / (len(PARS) - 1), "y": 0.5} for i, fid in enumerate(PARS)})
+    assert space.along("par1", 0) == 1.0 and space.along(PARS[-1], 0) == 0.0
     # Patch order (the chase path) does not move with the layout.
     assert space.spot("par1").path == 0.0
 
@@ -112,21 +114,21 @@ def test_sweep_starts_at_the_left_and_turns_at_the_right(patch):
     space = Space(patch)
     sweep = Travel(axis="along", beats=8, pingpong=True)
     assert brightest(sweep.render(ctx(space, music(beat=0)), PARS)) == "par1"
-    assert brightest(sweep.render(ctx(space, music(beat=4)), PARS)) == "par12"
+    assert brightest(sweep.render(ctx(space, music(beat=4)), PARS)) == PARS[-1]
 
 
 def test_sweep_follows_a_rearranged_room(patch):
     space = Space(patch)
-    space.set_layout({fid: {"x": 0.9 - 0.8 * i / 11, "y": 0.5} for i, fid in enumerate(PARS)})
+    space.set_layout({fid: {"x": 0.9 - 0.8 * i / (len(PARS) - 1), "y": 0.5} for i, fid in enumerate(PARS)})
     sweep = Travel(axis="along", beats=8, pingpong=True)
-    assert brightest(sweep.render(ctx(space, music(beat=0)), PARS)) == "par12"
+    assert brightest(sweep.render(ctx(space, music(beat=0)), PARS)) == PARS[-1]
 
 
 def test_rotor_turns_around_a_ring(patch):
     space = Space(patch, circle())
-    rotor = Travel(axis="angle", beats=12, pingpong=False, wrap=True)
+    rotor = Travel(axis="angle", beats=len(PARS), pingpong=False, wrap=True)
     # One fixture per beat, all the way round.
-    seen = [brightest(rotor.render(ctx(space, music(beat=b)), PARS)) for b in range(12)]
+    seen = [brightest(rotor.render(ctx(space, music(beat=b)), PARS)) for b in range(len(PARS))]
     assert seen == PARS
 
 
@@ -175,12 +177,12 @@ def test_scene_moves_with_the_layout_saved_in_the_engine(patch):
     look = engine.looks["sweep"]
     pal = palettes.get("halloween")
     before = look.render(music(beat=0), pal, 0.01)
-    engine.set_layout({fid: {"x": 0.9 - 0.8 * i / 11, "y": 0.5} for i, fid in enumerate(PARS)})
+    engine.set_layout({fid: {"x": 0.9 - 0.8 * i / (len(PARS) - 1), "y": 0.5} for i, fid in enumerate(PARS)})
     look.reset()
     after = look.render(music(beat=0), pal, 0.01)
     levels = lambda em: {fid: em[fid].intensity for fid in PARS}
     assert brightest(levels(before)) == "par1"
-    assert brightest(levels(after)) == "par12"
+    assert brightest(levels(after)) == PARS[-1]
 
 
 def test_scenes_report_their_layers(patch):
