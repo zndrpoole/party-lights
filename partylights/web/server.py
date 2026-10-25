@@ -70,6 +70,14 @@ DEFAULT_TUNING = CONFIG_DIR / "tuning.local.json"
 #: address point. Local for the same reason as the layout.
 DEFAULT_YARD = CONFIG_DIR / "yard.local.json"
 
+#: The fixture whose colour the costume strip wears: the bass wash keeps the
+#: look's colour even while its level rests low (its dimmer channel carries the
+#: level, so the hue stays exact). When it is off, the brightest fixture stands in.
+COSTUME_FIXTURE = "accent"
+#: Output below this is "off": the accent hands over, and if every fixture is
+#: under it the rig is dark (blackout, pre-drop slam). The bass floor is ~0.04.
+COSTUME_DARK_BELOW = 0.01
+
 #: /yard placement fields and the range each is clamped to. Lengths are metres
 #: (x east, y north, h up); beam is the full cone angle in degrees.
 YARD_FIELDS = {
@@ -258,14 +266,13 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             "server_time": round(time.time(), 2),
         }
 
-    def wire_payload() -> dict:
-        """The frame most recently handed to the driver, decoded per fixture.
+    def wire_frame(frame_no: int, frame: bytes) -> dict:
+        """One sent frame, decoded per fixture.
 
         Built from the transmitted bytes, never from engine state, so the
         visualiser shows exactly what the receivers get: blackout, freeze and
         manual overrides included.
         """
-        frame_no, frame = universe.sent_frame()
         return {
             "frame": frame_no,
             "fixtures": {
@@ -273,6 +280,63 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
                 for f in patch.ordered()
             },
         }
+
+    def costume_payload(frame_no: int, frame: bytes) -> dict:
+        """What the costume strip needs from one sent frame, in ~100 bytes.
+
+        Kicks and drops are running counters rather than flags, so a frame
+        lost to Wi-Fi delays a pulse instead of dropping it.
+        """
+        decoded = {f.fid: f.profile.decode(frame[f.address - 1 : f.last_channel])
+                   for f in patch.ordered()}
+        brightest = max(decoded.values(), key=lambda d: d["output"], default=None)
+        source = decoded.get(COSTUME_FIXTURE)
+        if source is None or source["output"] < COSTUME_DARK_BELOW:
+            source = brightest
+        rgb = [0, 0, 0]
+        if source is not None and max(source["display"]) > 0:
+            # display is gamma-encoded for screens; the strip is PWM, like DMX.
+            lin = [(c / 255.0) ** 2.2 for c in source["display"]]
+            peak = max(lin)
+            rgb = [int(round(255 * c / peak)) for c in lin]
+        return {
+            "frame": frame_no,
+            "rgb": rgb,
+            "dark": brightest is None or brightest["output"] < COSTUME_DARK_BELOW,
+            "kicks": engine.onset_counts.get("kick", 0) if engine is not None else 0,
+            "drops": engine.arc.drops if engine is not None else 0,
+        }
+
+    # One encoding per sent frame, shared by every client of a stream. /viz,
+    # /yard, /bench and the costume would otherwise each decode and serialise
+    # the same frame 40 times a second. A race only means encoding it twice.
+    latest_event: dict = {}
+
+    def encoded_event(payload_for, frame_no: int, frame: bytes) -> str:
+        hit = latest_event.get(payload_for)
+        if hit is None or hit[0] != frame_no:
+            hit = (frame_no, f"data: {json.dumps(payload_for(frame_no, frame))}\n\n")
+            latest_event[payload_for] = hit
+        return hit[1]
+
+    def frame_stream(payload_for):
+        """Server-sent events, one per frame the DMX writer sends.
+
+        Woken by the writer itself, so the stream runs at exactly its rate
+        (sleeping a fixed period after building each payload drifted to ~31 fps
+        and skipped frames). The current frame goes out immediately.
+        """
+        def generate():
+            last = None
+            while True:
+                frame_no, frame = universe.sent_frame()
+                if frame_no != last:
+                    last = frame_no
+                    yield encoded_event(payload_for, frame_no, frame)
+                universe.wait_frame(last, timeout=1.0)
+        return Response(generate(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Accel-Buffering": "no"})
 
     layout_file = Path(layout_path)
     tuning_file = Path(tuning_path)
@@ -390,23 +454,13 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
 
     @app.route("/api/wire")
     def api_wire():
-        """Server-sent events of the transmitted frame, for /viz.
+        """Server-sent events of the transmitted frame, for /viz."""
+        return frame_stream(wire_frame)
 
-        Paced at the DMX refresh rate so every frame the fixtures get can show.
-        """
-        period = 1.0 / universe.refresh_hz
-
-        def generate():
-            last = None
-            while True:
-                payload = wire_payload()
-                if payload["frame"] != last:
-                    last = payload["frame"]
-                    yield f"data: {json.dumps(payload)}\n\n"
-                time.sleep(period)
-        return Response(generate(), mimetype="text/event-stream",
-                        headers={"Cache-Control": "no-cache",
-                                 "X-Accel-Buffering": "no"})
+    @app.route("/api/costume")
+    def api_costume():
+        """Server-sent events for the costume strip: colour, dark, kicks, drops."""
+        return frame_stream(costume_payload)
 
     @app.route("/api/layout", methods=["GET"])
     def api_layout():

@@ -100,6 +100,74 @@ def test_wire_stream_comes_from_the_sent_frame_not_the_buffer(patch, tmp_path):
     assert _first_event(client)["fixtures"]["par1"]["output"] == 0.0
 
 
+def _events(client, url, n):
+    resp = client.get(url)
+    out = [json.loads(next(resp.response).decode().removeprefix("data: ")) for _ in range(n)]
+    resp.close()
+    return out
+
+
+def test_wire_stream_keeps_pace_with_the_writer(patch, tmp_path):
+    """Bug guarded: the stream slept a full DMX period *after* building each
+    payload, so it ran at ~31 fps against a 40 fps writer and skipped frames."""
+    client, universe = _client(patch, tmp_path)
+    universe.start()
+    try:
+        events = _events(client, "/api/wire", 21)
+    finally:
+        universe.stop(blackout=False)
+    frames = [e["frame"] for e in events[1:]]
+    assert frames == list(range(frames[0], frames[0] + len(frames)))
+
+
+class _Arc:
+    drops = 2
+
+
+class _Engine:
+    onset_counts = {"kick": 17}
+    arc = _Arc()
+
+    def set_layout(self, layout):
+        pass
+
+
+def _costume_client(patch, tmp_path):
+    universe = Universe(NullDriver(), slot_count=patch.max_channel)
+    app = create_app(patch=patch, universe=universe, state=None, engine=_Engine(),
+                     cues=None, layout_path=tmp_path / "layout.json",
+                     tuning_path=tmp_path / "tuning.json")
+    return app.test_client(), universe
+
+
+def _costume_frame(client, universe):
+    universe.start()
+    try:
+        return _events(client, "/api/costume", 2)[-1]
+    finally:
+        universe.stop(blackout=False)
+
+
+def test_costume_wears_the_accent_colour_at_full_brightness(patch, tmp_path):
+    client, universe = _costume_client(patch, tmp_path)
+    accent = patch.by_id["accent"]
+    universe.set_block(accent.address, accent.profile.render(Emission(rgb=(1, 0, 0.5), intensity=0.2)))
+    event = _costume_frame(client, universe)
+    assert event["rgb"][0] == 255 and event["rgb"][1] == 0
+    assert 0 < event["rgb"][2] < 255
+    assert event["dark"] is False
+    assert (event["kicks"], event["drops"]) == (17, 2)
+
+
+def test_costume_falls_back_to_the_brightest_fixture_and_goes_dark_with_the_rig(patch, tmp_path):
+    client, universe = _costume_client(patch, tmp_path)
+    assert _costume_frame(client, universe)["dark"] is True
+    par = patch.by_id["par4"]
+    universe.set_block(par.address, par.profile.render(Emission(rgb=(0, 1, 0))))
+    event = _costume_frame(client, universe)
+    assert event["rgb"] == [0, 255, 0] and event["dark"] is False
+
+
 def test_layout_round_trips_and_drops_unknown_fixtures(patch, tmp_path):
     client, _ = _client(patch, tmp_path)
     assert client.get("/api/layout").get_json() == {}
