@@ -17,9 +17,12 @@ That keeps the real-time path free of HTTP.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -342,11 +345,24 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
     tuning_file = Path(tuning_path)
     yard_file = Path(yard_path)
 
+    save_lock = threading.Lock()
+
     def write_json(path: Path, data: dict) -> None:
-        # Write then rename, so a crash mid-save cannot leave half a file.
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        os.replace(tmp, path)
+        # Write then rename, so a crash mid-save cannot leave half a file. One
+        # save at a time, each with its own temp file: a dragged slider posts
+        # several saves at once, and with a shared temp name one save renamed
+        # another's file away and answered 500 (seen 2026-10-18).
+        text = json.dumps(data, indent=2)
+        with save_lock:
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(text)
+                os.replace(tmp, path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+                raise
 
     def save_tuning() -> None:
         write_json(tuning_file, {"softness": state.softness,

@@ -338,3 +338,27 @@ def test_yard_layouts_are_validated_and_saved(patch, tmp_path):
     saved = client.post("/api/yard", json={"layouts": {"n": {"note": long_note, "fixtures": {}}}}).get_json()
     assert saved["layouts"]["n"]["note"] == long_note
 
+
+
+def test_concurrent_saves_all_succeed(patch, tmp_path):
+    """A dragged slider posts many saves at once. With one shared temp file name
+    a save could rename another's file away and answer 500 (2026-10-18)."""
+    import threading
+    from partylights.engine.state import EngineState
+    app = create_app(patch=patch, universe=Universe(NullDriver()), state=EngineState(),
+                     engine=None, cues=None, layout_path=tmp_path / "l.json",
+                     tuning_path=tmp_path / "tuning.json")
+    codes = []
+
+    def drag(i):
+        client = app.test_client()
+        for k in range(10):
+            codes.append(client.post("/api/softness", json={"softness": (i + k) / 100}).status_code)
+    threads = [threading.Thread(target=drag, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert set(codes) == {200}
+    json.loads((tmp_path / "tuning.json").read_text())
+    assert [p.name for p in tmp_path.iterdir()] == ["tuning.json"]
