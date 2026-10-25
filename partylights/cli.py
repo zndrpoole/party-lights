@@ -220,6 +220,9 @@ def cmd_run(args) -> int:
     print(f"  Stage    http://localhost:{port}/viz")
     print()
 
+    # werkzeug logs every request at INFO. The watchdog and the host pages poll
+    # /api/state around the clock, so that was most of the log; errors still show.
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
     try:
         app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)
     finally:

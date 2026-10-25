@@ -176,11 +176,27 @@ culprits.
 Then open **http://localhost:5055/** — bound to `0.0.0.0`, so use the Mac's LAN
 address from your phone and run the rig from anywhere in the house.
 
+> **No login.** Anyone on the same network can open these pages and fire
+> blackout, strobe or bench overrides. The jukebox proxy, the spook panel and
+> the costume all rely on that, so it stays open for the party. Keep guests on
+> a guest Wi-Fi network (or one without the party Mac) if that matters.
+
 | | |
 |---|---|
 | `/` | Full control: mode, master, looks, palettes, live meters, per-fixture override |
 | `/live` | Six big cue buttons mirroring the Stream Deck, plus the effects and the vibe slider |
 | `/api/cue/<name>` | The cue API — what the Stream Deck hits |
+| `/viz`, `/yard`, `/bench` | Stage plan, 3D backyard model, raw-channel test bench |
+| `/api/stream` | Server-sent events of the full state at 20 Hz (spook panel) |
+| `/api/wire` | Server-sent events of every transmitted DMX frame, decoded per fixture |
+| `/api/costume` | Server-sent events for the costume strip: `rgb`, `dark`, `kicks`, `drops`, one per frame |
+
+`/api/wire` and `/api/costume` are woken by the DMX writer itself, so they run
+at exactly its rate, and each frame is encoded once for every client.
+
+If the ENTTEC is missing or pulled out, the output retries it every
+`dmx.retry_seconds` (2 s) and `/api/state` shows `dmx.link.connected: false`;
+the jukebox watchdog alerts on that. Re-plugging the cable is all it takes.
 
 Useful flags while setting up: `--driver null` (no hardware), `--no-audio`,
 `--no-jukebox`. All three let you work on part of the system in isolation.
@@ -385,7 +401,8 @@ is the only honest option.
 | All fixtures do the same thing | They are all still on address 1 |
 | Nothing responds | Cable direction, or the fixture is not in DMX mode. `dmx_sweep.py flood` tests the link alone |
 | Lights lag the music | `audio.output_delay_ms`. Wireless DMX adds 20–80 ms; AirPlay adds ~2 s |
-| Lights stutter | Check `dropouts` and DMX `late` in the UI. Usually the i9 throttling |
+| Lights stutter | Check `dropouts` and DMX `late` in the UI. Usually the i9 throttling, or the Mac in DarkWake with the lid shut: keep it on AC with the lid open |
+| UI fine but the rig is dark | `dmx.link.connected` is false in `/api/state`: the ENTTEC dropped off USB. Re-seat it; output resumes within 2 s |
 | Lights frozen on one frame | `freeze` is on, or the engine died — the writer keeps sending the last good frame by design |
 | Fixtures stuck on after quitting | Should not happen: shutdown sends an all-zero frame. If the process was `kill -9`, re-run and blackout |
 
