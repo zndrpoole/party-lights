@@ -848,6 +848,12 @@ class Engine:
     def run(self) -> None:
         period = 1.0 / self.tick_hz
         last = time.monotonic()
+        # Paced against a deadline, not "sleep the rest of this tick": macOS
+        # oversleeps by a millisecond or two, and sleeping a fixed remainder ran
+        # the engine at 83 ticks/s instead of 100. A late tick now shortens the
+        # next sleep, so the rate holds on average (which _energy_env, tuned per
+        # tick, relies on). A long stall resyncs rather than racing to catch up.
+        next_due = last
         log.info("Engine running at %.0f Hz, look=%s", self.tick_hz, self._active)
         while not self._stop.is_set():
             now = time.monotonic()
@@ -862,9 +868,12 @@ class Engine:
                 self._last_error = str(e)
                 if self._errors % 50 == 1:
                     log.exception("engine tick failed")
-            slack = period - (time.monotonic() - now)
+            next_due += period
+            slack = next_due - time.monotonic()
             if slack > 0:
                 time.sleep(slack)
+            elif slack < -period:
+                next_due = time.monotonic()
         log.info("Engine stopped after %d ticks (%d errors)", self._ticks, self._errors)
 
     def start(self) -> None:

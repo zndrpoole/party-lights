@@ -1029,3 +1029,19 @@ def test_chase_laps_the_ring_and_turns_round_on_a_colour_change(rig):
     back, _ = head(16, 0.5)
     assert pars.index(fwd) < len(pars) // 2 < pars.index(back)
 
+
+
+def test_engine_holds_its_tick_rate(rig):
+    """Sleeping a fixed remainder each tick oversleeps on macOS: the live engine
+    ran at 83 ticks/s against 100. Deadline pacing must hold the rate."""
+    import time
+    *_, engine, _ = rig
+    engine.start()
+    try:
+        time.sleep(0.3)
+        t0, n0 = time.monotonic(), engine._ticks
+        time.sleep(2.0)
+        rate = (engine._ticks - n0) / (time.monotonic() - t0)
+    finally:
+        engine.stop()
+    assert 95 <= rate <= 102, rate
