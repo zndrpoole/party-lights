@@ -757,7 +757,7 @@ class Engine:
 
         # A designed show picks the look and palette itself. Otherwise honour
         # the host's choice in manual mode, or let the music pick.
-        plan = self.show.plan(state.vibe)
+        plan = self.show.plan(state.vibe, pal)
         if plan is not None:
             look, pal, level = plan
             if look != self._active:
