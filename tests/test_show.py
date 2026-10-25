@@ -178,3 +178,77 @@ def test_engine_follows_the_card():
     engine.show.stop()
     engine.tick(0.01)
     assert engine.active_look == "ambient"           # silence, auto mode again
+
+
+# -- following the jukebox ----------------------------------------------------
+
+@pytest.fixture
+def follower():
+    clock = Clock()
+    return ShowRunner(load_patch(DEFAULT_RIG), clock=clock), clock
+
+
+def test_jukebox_starts_the_show_and_keeps_it_in_step(follower):
+    runner, clock = follower
+    assert runner.follow(THE_DAYS, 30.0, True, clock.now)["started"]
+    assert runner.snapshot()["source"] == "jukebox"
+    clock.now += 2.0
+    # read 0.5 s ago at 31.5 s: it's at 32.0 s now, as the clock says
+    assert runner.follow(THE_DAYS, 31.5, True, clock.now - 0.5)["drift_s"] == pytest.approx(0)
+    assert runner.song_time() == pytest.approx(32.0)
+
+
+def test_songs_without_a_card_leave_the_rig_to_the_music(follower):
+    runner, clock = follower
+    assert runner.follow("0000000000000000000000", 10.0, True, clock.now) is None
+    assert not runner.active
+
+
+def test_pause_skip_or_manual_mode_end_a_jukebox_show(follower):
+    runner, clock = follower
+    for stop in ({"track_id": THE_DAYS, "position_s": 40.0, "playing": False},
+                 {"track_id": "0000000000000000000000", "position_s": 0.0, "playing": True},
+                 {"track_id": THE_DAYS, "position_s": 40.0, "playing": True, "allowed": False}):
+        runner.follow(THE_DAYS, 30.0, True, clock.now)
+        assert runner.active
+        allowed = stop.pop("allowed", True)
+        runner.follow(stop["track_id"], stop["position_s"], stop["playing"], clock.now,
+                      allowed=allowed)
+        assert not runner.active, stop
+
+
+def test_the_host_can_switch_shows_off(follower):
+    runner, clock = follower
+    runner.follow_enabled = False
+    assert runner.follow(THE_DAYS, 30.0, True, clock.now) is None
+    assert not runner.active
+
+
+def test_a_hand_started_show_is_left_alone(follower):
+    runner, clock = follower
+    runner.start(THE_DAYS, 5.0)
+    runner.follow("0000000000000000000000", 0.0, True, clock.now)
+    runner.follow(THE_DAYS, 5.0, False, clock.now)
+    assert runner.active and runner.snapshot()["source"] == "manual"
+
+
+def test_alias_plays_the_kept_tracks_show(tmp_path):
+    root = Path(__file__).resolve().parent.parent / "songs"
+    (tmp_path / "designs").mkdir()
+    (tmp_path / "maps").mkdir()
+    for sub, ext in (("designs", "yaml"), ("maps", "json")):
+        (tmp_path / sub / f"{THE_DAYS}.{ext}").write_text(
+            (root / sub / f"{THE_DAYS}.{ext}").read_text())
+    (tmp_path / "aliases.json").write_text('{"by_id": {"1111111111111111111111": "%s"}}' % THE_DAYS)
+    runner = ShowRunner(load_patch(DEFAULT_RIG), root=tmp_path, clock=Clock())
+    assert runner.resolve("1111111111111111111111") == THE_DAYS
+
+
+def test_a_broken_card_is_tried_once(tmp_path):
+    (tmp_path / "designs").mkdir()
+    (tmp_path / "maps").mkdir()
+    (tmp_path / "designs" / f"{THE_DAYS}.yaml").write_text("sections: [")
+    (tmp_path / "maps" / f"{THE_DAYS}.json").write_text("{}")
+    runner = ShowRunner(load_patch(DEFAULT_RIG), root=tmp_path, clock=Clock())
+    assert runner.follow(THE_DAYS, 1.0, True, 1000.0) is None
+    assert runner.resolve(THE_DAYS) is None

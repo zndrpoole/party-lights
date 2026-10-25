@@ -10,7 +10,8 @@ engine's own guesswork about builds and drops stands down, since the card
 already knows where they are.
 
 The clock is song time, in seconds, anchored by whoever knows where the song
-is: today a player that reads Spotify's position (tools/playshow.py), later
+is: the jukebox poller (`follow`, every couple of seconds while the party
+runs), a player that reads Spotify's position (tools/playshow.py), and later
 the live fingerprint lock. `sync()` re-anchors only on a real disagreement, so
 a jittery position reading does not make the show stutter.
 
@@ -44,6 +45,7 @@ from pathlib import Path
 
 from ..fixtures.color import BLACK, Emission, clamp, hsv, mix
 from ..fixtures.patch import Patch
+from . import palette as palettes
 from .palette import Palette
 
 log = logging.getLogger(__name__)
@@ -114,7 +116,7 @@ class Cue:
 class Card:
     track: str
     name: str
-    palette: Palette
+    palette: Palette | None      # None: wear the rig's current palette
     vibe: float
     sections: list[Section]
     cues: list[Cue]
@@ -129,10 +131,19 @@ class Card:
         design = yaml.safe_load((root / "designs" / f"{track_id}.yaml").read_text())
         song_map = json.loads((root / "maps" / f"{track_id}.json").read_text())
 
+        # The palette: the card's own colours, a stock palette by name
+        # ({stock: blood-moon}), or none ({from: pool}, and generated cards):
+        # then the show wears whatever the rig's palette is, so the host's
+        # pool and auto switching carry on as usual.
         pal = design.get("palette") or {}
         colors = tuple(hsv(*c["hsv"]) for c in pal.get("colors", []) if "hsv" in c)
-        palette = Palette(pal.get("name", track_id), colors or ((1.0, 1.0, 1.0),),
-                          "from the song's design card", theme="misc")
+        if colors:
+            palette = Palette(pal.get("name", track_id), colors,
+                              "from the song's design card", theme="misc")
+        elif pal.get("stock"):
+            palette = palettes.get(str(pal["stock"]))
+        else:
+            palette = None
 
         sections = sorted(
             (Section(song_seconds(s["at"]), s["look"], s.get("calm"),
@@ -183,8 +194,68 @@ class ShowRunner:
         self._fired: set[int] = set()
         self._flash = 0.0
         self._flash_rgb = WHITE
+        #: The palette in play: the card's, or the rig's for a card without one.
+        self._palette: Palette | None = None
+        #: Who started the show in play: "jukebox" for follow(), else "manual".
+        self._source = "manual"
+        #: Tracks whose card or map failed to load, so a bad file is reported
+        #: once rather than on every poll.
+        self._broken: set[str] = set()
+        self._aliases: dict[str, str] | None = None
+        #: Whether follow() may start shows. The host can switch it off live.
+        self.follow_enabled = True
 
     # -- control (any thread) --------------------------------------------
+
+    def resolve(self, track_id: str) -> str | None:
+        """The track id whose show this track plays, or None without one.
+
+        The playlist was de-duplicated, so the jukebox may play another release
+        of a mapped song; songs/aliases.json maps those to the kept track.
+        """
+        if not track_id:
+            return None
+        if self._aliases is None:
+            try:
+                self._aliases = json.loads((self.root / "aliases.json").read_text()).get("by_id", {})
+            except (OSError, ValueError):
+                self._aliases = {}
+        for tid in (track_id, self._aliases.get(track_id)):
+            if tid and tid not in self._broken and (self.root / "designs" / f"{tid}.yaml").exists() \
+                    and (self.root / "maps" / f"{tid}.json").exists():
+                return tid
+        return None
+
+    def follow(self, track_id: str, position_s: float | None, playing: bool,
+               at: float | None = None, *, allowed: bool = True) -> dict | None:
+        """The jukebox's latest reading: start, keep in step or end this song's show.
+
+        `at` is when the position was read, on this runner's clock. Shows it
+        started end when the song is paused, has no card, or `allowed` is False
+        (the host is driving the lights by hand); a show started by hand is
+        left alone.
+        """
+        track = self.resolve(track_id) if (allowed and self.follow_enabled) else None
+        with self._lock:
+            ours = self.card is not None and self._source == "jukebox"
+            current = self.card.track if self.card is not None else None
+        if track is None or not playing or position_s is None:
+            if ours:
+                self.stop()
+            return None
+        if current is not None and not ours and current != track:
+            return None       # a hand-started show of another song keeps going
+        position = position_s + (self.clock() - at if at is not None else 0.0)
+        try:
+            result = self.sync(track, position)
+        except Exception as e:
+            self._broken.add(track)
+            log.warning("Show for %s won't load, playing auto instead: %s", track, e)
+            return None
+        if result.get("started"):
+            with self._lock:
+                self._source = "jukebox"
+        return result
 
     def start(self, track_id: str, position_s: float) -> Card:
         card = Card.load(track_id, self.root)
@@ -195,6 +266,7 @@ class ShowRunner:
             self._synced = now
             self._fired = set()
             self._flash = 0.0
+            self._source = "manual"
         log.info("Show: %s from %.1fs", card.name, position_s)
         return card
 
@@ -241,7 +313,8 @@ class ShowRunner:
             t = self.clock() - self._anchor
         sec = card.section_at(t)
         return {"track": card.track, "name": card.name, "t": round(t, 2),
-                "section": sec.note if sec else None, "look": sec.look if sec else None}
+                "section": sec.note if sec else None, "look": sec.look if sec else None,
+                "source": self._source}
 
     # -- the tick ---------------------------------------------------------
 
@@ -250,9 +323,11 @@ class ShowRunner:
         card = self.card
         return clamp((card.vibe if card else 0.5) + (host_vibe - 0.5))
 
-    def plan(self, host_vibe: float) -> tuple[str, Palette, float] | None:
+    def plan(self, host_vibe: float, rig_palette: Palette | None = None
+             ) -> tuple[str, Palette | None, float] | None:
         """Look, palette and level for now, or None when no show is running
-        (or the show has just ended)."""
+        (or the show has just ended). The palette is the card's, else
+        `rig_palette`, the one the rig would wear anyway."""
         with self._lock:
             card = self.card
             if card is None:
@@ -263,11 +338,18 @@ class ShowRunner:
                 log.info("Show over: %s", card.name)
                 self.card = None
                 return None
+        pal = card.palette or rig_palette
+        self._palette = pal
         sec = card.section_at(t)
         if sec is None:
-            return card.sections[0].look if card.sections else "ambient", card.palette, 0.0
+            return card.sections[0].look if card.sections else "ambient", pal, 0.0
         look = sec.calm if (sec.calm and self.effective_vibe(host_vibe) < CALM_BELOW) else sec.look
-        return look, card.palette, sec.level
+        return look, pal, sec.level
+
+    def _lead(self):
+        """The palette's first colour, for flashes and builds over dark fixtures."""
+        pal = (self.card.palette if self.card else None) or self._palette
+        return pal.at(0) if pal is not None else WHITE
 
     def shade(self, emissions: dict[str, Emission], host_vibe: float, dt: float,
               max_strobe_s: float) -> dict[str, Emission]:
@@ -298,7 +380,7 @@ class ShowRunner:
                         fired.add(i)
                         self._flash = 1.0
                         self._flash_rgb = (WHITE if cue.raw.get("color", "white") == "white"
-                                           else card.palette.at(0))
+                                           else self._lead())
                 continue
             if cue.do == "fade":
                 continue        # to black: below, over the flash; to a look: sections
@@ -319,7 +401,7 @@ class ShowRunner:
                 rate = BUILD_RATES[min(len(BUILD_RATES) - 1, int(x * len(BUILD_RATES)))]
                 gate = 1.0 if (card.beat_phase(t) * rate) % 1.0 < 0.5 else 0.15
                 each(pars, lambda em: Emission(mix(em.rgb if max(em.rgb) > 0 else
-                                                   card.palette.at(0), WHITE, whiten),
+                                                   self._lead(), WHITE, whiten),
                                                level * gate * max(em.intensity, 0.6),
                                                em.strobe, em.uv, em.emitter_bias))
             elif cue.do == "strobe":

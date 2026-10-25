@@ -331,6 +331,28 @@ python -m partylights.cli listen "<playlist link>" --limit 3
 python -m partylights.cli songmap show "<song name>"
 ```
 
+`--popular-first` maps the most popular songs first, so a pass that only gets
+part way covers the likeliest requests.
+
+### Per-song shows
+
+A mapped song with a design card (`songs/designs/<track id>.yaml`) plays its
+own show whenever the jukebox plays it: looks per section, black for the
+stops, a build into each drop, a hit on the drop. The jukebox's `/api/now`
+reports the song's position, and the show keeps in step with it every poll
+(about a tenth of a second). Other releases of a mapped song are found through
+`songs/aliases.json`. Songs without a card are left to the music as usual.
+
+- **Draft cards** for every mapped song: `python tools/design_cards.py`
+  (`--list` shows which songs have a hand-made card, a draft or none). Drafts
+  use no colours of their own, so the show wears the rig's palette and the
+  host's pool and auto switching still apply. A card without `generated: true`
+  is never overwritten; delete that line from a draft to keep your edits.
+- **The host stays in charge:** manual mode ends a show, the `shows-off` cue
+  (or `shows`, a toggle) stops them for the night and `shows-on` brings them
+  back. `shows.follow_jukebox: false` in settings starts with them off.
+- `tools/playshow.py "<song>"` still plays a card on demand, to design one.
+
 ## Stream Deck and keyboard
 
 Every manual action is a named cue, and every trigger routes through the same

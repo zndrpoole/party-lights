@@ -11,7 +11,8 @@ hiccups, restarts, or is simply not running. Nothing here is on the engine's
 critical path: the poller runs on its own thread and only ever hands over
 already-parsed results.
 
-Reads the jukebox's existing /api/status endpoint. The jukebox is not modified.
+Reads the jukebox's /api/now (track plus its position, for per-song shows),
+falling back to /api/status on a jukebox too old to have it.
 """
 
 from __future__ import annotations
@@ -33,6 +34,9 @@ class TrackInfo:
     artist: str = ""
     requested_by: str = ""
     is_playing: bool = False
+    #: Song position in seconds as of `at` (time.monotonic()), when the jukebox says.
+    position_s: float | None = None
+    at: float = 0.0
 
     @property
     def known(self) -> bool:
@@ -53,11 +57,16 @@ class JukeboxClient:
         poll_seconds: float = 2.0,
         timeout: float = 2.0,
         on_track_change=None,
+        on_poll=None,
     ):
         self.base_url = base_url.rstrip("/")
         self.poll_seconds = poll_seconds
         self.timeout = timeout
         self.on_track_change = on_track_change
+        #: `on_poll(TrackInfo)` fires after every successful poll, on the poller
+        #: thread; per-song shows use it to follow the song's position.
+        self.on_poll = on_poll
+        self._path = "/api/now"
 
         self.track = TrackInfo()
         self.connected = False
@@ -77,9 +86,15 @@ class JukeboxClient:
     def poll_once(self) -> TrackInfo | None:
         """One request. Returns the current track, or None if unavailable."""
         try:
-            resp = requests.get(f"{self.base_url}/api/status", timeout=self.timeout)
+            sent = time.monotonic()
+            resp = requests.get(f"{self.base_url}{self._path}", timeout=self.timeout)
+            if resp.status_code == 404 and self._path == "/api/now":
+                self._path = "/api/status"
+                resp = requests.get(f"{self.base_url}{self._path}", timeout=self.timeout)
             resp.raise_for_status()
             data = resp.json()
+            # The position was read somewhere in the round trip; call it the middle.
+            at = (sent + time.monotonic()) / 2
         except Exception as e:
             with self._lock:
                 self.failures += 1
@@ -104,6 +119,9 @@ class JukeboxClient:
             artist=str(current.get("artist") or ""),
             requested_by=str(current.get("requested_by_nickname") or ""),
             is_playing=bool(current.get("is_playing", bool(current))),
+            position_s=(float(current["position_s"])
+                        if isinstance(current.get("position_s"), (int, float)) else None),
+            at=at,
         )
         with self._lock:
             self.track = info
@@ -132,6 +150,11 @@ class JukeboxClient:
                             self.on_track_change(info)
                         except Exception:
                             log.exception("track-change handler failed")
+                if self.on_poll is not None:
+                    try:
+                        self.on_poll(info)
+                    except Exception:
+                        log.exception("jukebox poll handler failed")
             self._stop.wait(self.poll_seconds)
         log.info("Jukebox poller stopped")
 
