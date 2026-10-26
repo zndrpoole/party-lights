@@ -23,6 +23,8 @@ class UvAccentLook(Look):
     description = "Blacklight from the accent fixture over a dark bed"
     #: Output release. Short or long because it is the late-night look.
     release_s = 0.60
+    #: The accent stays on blacklight; par1 and par2 stay dark with it.
+    bass = "look"
 
     def __init__(self, patch):
         super().__init__(patch)

@@ -59,6 +59,9 @@ class Universe:
         self._slot_count = max(MIN_SLOTS, min(DMX_SLOTS, slot_count))
 
         self._lock = threading.Lock()
+        # Signalled once per composed frame, so readers can follow the wire
+        # exactly instead of polling it and drifting against the writer.
+        self._frame_sent = threading.Condition(self._lock)
         self._values = bytearray(DMX_SLOTS)
         self._snapshot = bytearray(DMX_SLOTS)
         # Preallocated source for blackout and clear, so neither allocates.
@@ -149,6 +152,15 @@ class Universe:
         with self._lock:
             return self._frames, bytes(self._snapshot[: self._slot_count])
 
+    def wait_frame(self, after: int, timeout: float = 1.0) -> int:
+        """Block until a frame newer than `after` is sent; return the counter.
+
+        Returns the unchanged counter on timeout (writer stopped or stalled).
+        """
+        with self._frame_sent:
+            self._frame_sent.wait_for(lambda: self._frames != after, timeout)
+            return self._frames
+
     def buffer(self) -> bytes:
         """What the engine most recently asked for, ignoring freeze/blackout."""
         with self._lock:
@@ -166,6 +178,8 @@ class Universe:
                 "frozen": self._frozen,
                 "priority_boosted": self._priority_boosted,
                 "driver": self.driver.describe(),
+                # Only drivers that can lose their hardware report a link.
+                "link": self.driver.status() if hasattr(self.driver, "status") else None,
             }
 
     # -- lifecycle --------------------------------------------------------
@@ -215,6 +229,7 @@ class Universe:
                     self._snapshot[:n] = self._values[:n]
                 # frozen and not blacked out: leave _snapshot exactly as it is
                 self._frames += 1
+                self._frame_sent.notify_all()
 
             self.driver.send(memoryview(self._snapshot)[:n])
             window_frames += 1

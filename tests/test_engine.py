@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from dataclasses import replace as replace_music
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -30,6 +31,11 @@ def rig():
     engine = Engine(patch, universe, state, analyser=Analyser(sample_rate=SR), tick_hz=100)
     cues = CueRouter(engine, universe, state)
     return patch, universe, state, engine, cues
+
+
+#: The first PAR of the ring. par1 itself is a bass light now, which looks
+#: leave to the engine (see Engine._bass_follow).
+FIRST_PAR = load_patch(DEFAULT_RIG).group("pars")[0].fid
 
 
 def silent_state(t=0.0):
@@ -148,7 +154,7 @@ def test_softness_reaches_the_looks_own_decays(rig):
         look.render(kick_state(0.0, kick=True), pal, 0.025)
         for k in range(12):                             # 300 ms after the hit
             out = look.render(kick_state(0.025 * k), pal, 0.025)
-        levels[soft] = out["par1"].intensity
+        levels[soft] = out[FIRST_PAR].intensity
     assert levels[-1.0] < levels[1.0]
 
 
@@ -246,16 +252,16 @@ def test_swell_holds_colour_then_rolls_to_the_next(rig):
     patch, *_ = rig
     look = SwellLook(patch)
     frames = _run_swell(look, HOLD_S + 12, lambda t: loud_state(t))
-    held = {fr["par1"].rgb for fr in frames[: int((HOLD_S - 1) / 0.025)]}
+    held = {fr[FIRST_PAR].rgb for fr in frames[: int((HOLD_S - 1) / 0.025)]}
     assert len(held) == 1
-    assert frames[-1]["par1"].rgb != frames[0]["par1"].rgb
+    assert frames[-1][FIRST_PAR].rgb != frames[0][FIRST_PAR].rgb
 
 
 def test_swell_does_not_show_individual_hits(rig):
     patch, *_ = rig
     look = SwellLook(patch)
     frames = _run_swell(look, 4, lambda t: loud_state(t) if 2.0 <= t < 2.1 else silent_state(t))
-    before, after = frames[int(1.9 / 0.025)]["par1"], frames[int(2.2 / 0.025)]["par1"]
+    before, after = frames[int(1.9 / 0.025)][FIRST_PAR], frames[int(2.2 / 0.025)][FIRST_PAR]
     assert abs(after.intensity - before.intensity) < 0.08
 
 
@@ -273,8 +279,9 @@ def test_swell_section_change_rotates_only_after_min_hold(rig):
 def test_swell_pairs_orange_with_purple(rig):
     patch, *_ = rig
     fr = SwellLook(patch).render(silent_state(), palettes.get("halloween-deep"), 0.025)
-    r1, _, b1 = fr["par1"].rgb
-    r4, _, b4 = fr["par4"].rgb
+    pars = [f.fid for f in patch.group("pars")]
+    r1, _, b1 = fr[pars[0]].rgb
+    r4, _, b4 = fr[pars[3]].rgb      # the fourth PAR, first of the next block
     assert r1 == 1.0 and b1 == 0.0      # orange block
     assert b4 == 1.0 and r4 < 0.8       # purple block
 
@@ -318,7 +325,7 @@ def test_unison_moves_the_whole_room_together(rig):
     hit = look.render(kick_state(0.025, kick=True), pal, 0.025)
     pars = [f.fid for f in patch.group("pars")]
     assert len({(hit[f].rgb, hit[f].intensity) for f in pars}) == 1
-    assert hit["par1"].intensity > quiet["par1"].intensity + 0.2
+    assert hit[FIRST_PAR].intensity > quiet[FIRST_PAR].intensity + 0.2
 
 
 def test_mirror_is_symmetric_and_bursts_outward(rig):
@@ -333,8 +340,9 @@ def test_mirror_is_symmetric_and_bursts_outward(rig):
     for a, b in zip(pars, reversed(pars)):
         assert abs(early[a].intensity - early[b].intensity) < 1e-9
     # Early on the centre is brightest; later the ring has reached the ends.
-    assert early["par6"].intensity > early["par1"].intensity
-    assert late["par1"].intensity > late["par6"].intensity
+    mid, end = pars[len(pars) // 2], pars[0]
+    assert early[mid].intensity > early[end].intensity
+    assert late[end].intensity > late[mid].intensity
 
 
 def test_colour_follows_bars_not_kicks_when_tempo_is_locked(rig):
@@ -345,7 +353,7 @@ def test_colour_follows_bars_not_kicks_when_tempo_is_locked(rig):
     for name in ("pulse", "mirror", "unison"):
         look = BY_NAME[name](patch)
         colours = {look.render(kick_state(k * 0.025, kick=True, tempo_locked=True,
-                                          beat_index=5), pal, 0.025)["par1"].rgb
+                                          beat_index=5), pal, 0.025)[FIRST_PAR].rgb
                    for k in range(200)}
         assert len(colours) == 1, name
 
@@ -464,7 +472,8 @@ def test_every_look_renders_with_music(rig, name):
         out = engine.analyser.feed(signal[i : i + 4096])
         if out:
             engine._music = out[-1]
-    em = engine.looks[name].render(engine._music, palettes.get("neon"), 0.01)
+    # Through the engine, which colours the bass lights the looks leave alone.
+    em = engine._render_look(name, engine._music, palettes.get("neon"), 0.01)
     assert len(em) == len(patch)
 
 
@@ -483,7 +492,7 @@ def test_strobe_and_blinder_are_excluded_from_auto_selection():
 
 def test_uv_look_only_drives_uv_on_fixtures_that_have_it(rig):
     patch, _, _, engine, _ = rig
-    em = engine.looks["uv"].render(silent_state(), palettes.get("cool"), 0.01)
+    em = engine._render_look("uv", silent_state(), palettes.get("cool"), 0.01)
     for f in patch:
         if not f.profile.has_uv:
             # A PAR has no UV emitter, so the rendered channels cannot contain
@@ -833,8 +842,8 @@ def test_pages_render(client):
 
 def test_rig_endpoint_describes_the_whole_rig(client):
     data = client.get("/api/rig").get_json()
-    assert len(data["fixtures"]) == 13
-    assert data["max_channel"] == 94
+    assert len(data["fixtures"]) == 15
+    assert data["max_channel"] == 115
     accent = next(f for f in data["fixtures"] if f["id"] == "accent")
     assert accent["has_uv"]
     assert "amber" in accent["emitters"]
@@ -870,3 +879,169 @@ def test_fixture_endpoint_rejects_malformed_rgb(client):
 def test_group_endpoint_applies_to_a_whole_group(client):
     resp = client.post("/api/fixtures", json={"group": "pars", "active": True})
     assert len(resp.get_json()["applied"]) == 12
+
+
+# -- the accent's bass wash ---------------------------------------------------
+#
+# The accent is a large wash; it must swell with the bass -- hit, hold, fade --
+# not flash on and off with every short hit the look makes.
+
+def test_accent_hits_holds_then_fades_on_the_bass(rig):
+    from partylights.engine.engine import BASS_FADE_S, BASS_FLOOR, BASS_HOLD_S
+    from partylights.fixtures.color import Emission
+    patch, engine = rig[0], rig[3]
+    engine.select("unison")                      # a look whose bass lights pump
+    accent = patch.group("accent")[0].fid
+    pal = palettes.get("ember")
+    levels = []
+    for i in range(int((BASS_HOLD_S + BASS_FADE_S + 0.3) * 100)):
+        # The look flashes the accent on and off; the wash must ignore that.
+        look = {accent: Emission((1.0, 0.0, 0.0), float(i % 2), 1.0, 0.0, 0.0)}
+        out = engine._bass_wash(look, _hit(i / 100, "kick" if i == 0 else None), pal, 0.01)
+        levels.append(out[accent].intensity)
+        assert out[accent].strobe == 0.0 and out[accent].rgb == (1.0, 0.0, 0.0)
+    hold = int(BASS_HOLD_S * 100) - 2
+    assert levels[0] > 0.7
+    assert all(abs(l - levels[0]) < 1e-6 for l in levels[:hold])  # held, not flashed
+    assert BASS_FLOOR < levels[hold + int(BASS_FADE_S * 50)] < levels[0]  # fading
+    assert all(b <= a + 1e-9 for a, b in zip(levels, levels[1:]))  # never flickers up
+    assert abs(levels[-1] - BASS_FLOOR) < 1e-6                     # rests at the floor
+
+
+def test_accent_wash_leaves_pars_and_silence_alone(rig):
+    from partylights.fixtures.color import Emission
+    patch, engine = rig[0], rig[3]
+    par, accent = patch.group("pars")[0].fid, patch.group("accent")[0].fid
+    look = {par: Emission((0.0, 1.0, 0.0), 0.3, 0.0, 0.0, 0.0),
+            accent: Emission((0.0, 0.0, 1.0), 0.4, 0.0, 0.0, 0.0)}
+    out = engine._bass_wash(look, _hit(0.0, "kick"), palettes.get("ember"), 0.01)
+    assert out[par] == look[par]
+    assert engine._bass_wash(look, silent_state(), palettes.get("ember"), 0.01) == look
+
+
+def test_accent_wash_falls_between_kicks_at_dance_tempo(rig):
+    # Live bug: at 130 BPM fixed hold + fade times kept the wash pinned at full.
+    from dataclasses import replace
+    patch, engine = rig[0], rig[3]
+    engine.select("unison")
+    accent = patch.group("accent")[0].fid
+    beat = int(round(100 * 60 / 130))
+    levels = []
+    for i in range(beat * 8):
+        m = replace(_hit(i / 100, "kick" if i % beat == 0 else None), bpm=130.0, tempo_locked=True)
+        levels.append(engine._bass_wash({}, m, palettes.get("ember"), 0.01)[accent].intensity)
+    last = levels[-beat:]
+    assert max(last) > 0.7 and min(last) < 0.45   # a visible pump every beat
+    assert sum(l >= max(last) - 1e-6 for l in last) >= 8   # each hit still holds
+
+
+# The bass lights -- par1, par2 and the accent -- are the three biggest washes,
+# triangulated round the yard, and move as one instrument on the low end.
+
+def _bass_ids(patch):
+    return [f.fid for f in patch.group("bass")]
+
+
+def test_bass_lights_are_par1_par2_and_the_accent_not_the_ring(rig):
+    patch = rig[0]
+    assert _bass_ids(patch) == ["par1", "par2", "accent"]
+    assert not {"par1", "par2"} & {f.fid for f in patch.group("pars")}
+
+
+def test_bass_lights_pump_together_and_hit_full_on_the_downbeat(rig):
+    from dataclasses import replace
+    patch, engine = rig[0], rig[3]
+    engine.select("unison")
+    ids = _bass_ids(patch)
+    off = replace(_hit(0.0, "kick"), bpm=128.0, tempo_locked=True, beat_index=1)
+    out = engine._bass_wash({}, off, palettes.get("ember"), 0.01)
+    assert len({out[f].intensity for f in ids}) == 1          # one instrument
+    assert out[ids[0]].intensity < 0.95                        # an ordinary kick
+    one = replace(_hit(0.5, "kick"), bpm=128.0, tempo_locked=True, beat_index=4)
+    out = engine._bass_wash({}, one, palettes.get("ember"), 0.01)
+    assert all(out[f].intensity == pytest.approx(1.0) for f in ids)   # bar one
+
+
+def test_bass_hit_goes_round_the_triangle_under_rotor(rig):
+    patch, engine = rig[0], rig[3]
+    engine.select("rotor")
+    ids = _bass_ids(patch)
+    brightest = []
+    for k in range(6):
+        out = engine._bass_wash({}, _hit(k * 0.5, "kick"), palettes.get("ember"), 0.5)
+        levels = {f: out[f].intensity for f in ids}
+        brightest.append(max(levels, key=levels.get))
+        assert min(levels.values()) > 0.3      # the other two still lift
+    assert brightest == ids + ids
+
+
+def test_bass_lights_swell_without_showing_hits_in_a_calm_look(rig):
+    patch, engine = rig[0], rig[3]
+    engine.select("wash")
+    ids = _bass_ids(patch)
+    quiet = _hit(0.0)
+    before = engine._bass_wash({}, quiet, palettes.get("ember"), 0.01)[ids[0]].intensity
+    after = engine._bass_wash({}, _hit(0.01, "kick"), palettes.get("ember"), 0.01)[ids[0]].intensity
+    assert abs(after - before) < 0.02          # a kick does not show
+
+
+def test_looks_hand_par1_and_par2_the_accents_colour(rig):
+    patch, engine = rig[0], rig[3]
+    out = engine._render_look("unison", kick_state(0.0), palettes.get("halloween"), 0.01)
+    accent = out[patch.group("accent")[0].fid]
+    assert out["par1"].rgb == out["par2"].rgb == accent.rgb
+    # Where the accent is blacklight only, par1 and par2 go dark with it.
+    uv = engine._render_look("uv", kick_state(0.0), palettes.get("halloween"), 0.01)
+    assert max(uv["par1"].rgb) == 0.0 and uv["par1"].uv == 0.0
+
+
+def test_the_riser_lifts_every_bass_light_while_the_ring_goes_dark(rig):
+    from partylights.fixtures.color import Emission
+    patch, engine = rig[0], rig[3]
+    engine.state.vibe = 0.5
+    engine.arc.mods.blackout, engine.arc.mods.riser = 1.0, 1.0
+    look = {f.fid: Emission((1.0, 0.0, 0.0), 0.5) for f in patch}
+    out = engine._arc_cut(look)
+    assert all(out[f].intensity >= 0.85 and out[f].rgb == (1.0, 1.0, 1.0)
+               for f in _bass_ids(patch))
+    assert all(out[f.fid].intensity == 0.0 for f in patch.group("pars"))
+
+
+def test_chase_laps_the_ring_and_turns_round_on_a_colour_change(rig):
+    patch = rig[0]
+    look = BY_NAME["chase"](patch)
+    pal = palettes.get("halloween")
+    pars = [f.fid for f in patch.group("pars")]
+
+    def head(beat_index, bar_phase=0.0):
+        m = replace_music(kick_state(0.0), tempo_locked=True, beat_index=beat_index,
+                          bar_phase=bar_phase)
+        out = look.render(m, pal, 0.01)
+        return max(pars, key=lambda f: out[f].intensity), out
+
+    first, out = head(0)
+    assert first == pars[0]
+    # Near the end of a lap the head wraps to the first PAR, not back along.
+    _, out = head(4, 0.99)
+    assert out[pars[0]].intensity > out[pars[len(pars) // 2]].intensity
+    # A quarter-lap in, forwards for the first colour and backwards the next.
+    fwd, _ = head(0, 0.5)
+    back, _ = head(16, 0.5)
+    assert pars.index(fwd) < len(pars) // 2 < pars.index(back)
+
+
+
+def test_engine_holds_its_tick_rate(rig):
+    """Sleeping a fixed remainder each tick oversleeps on macOS: the live engine
+    ran at 83 ticks/s against 100. Deadline pacing must hold the rate."""
+    import time
+    *_, engine, _ = rig
+    engine.start()
+    try:
+        time.sleep(0.3)
+        t0, n0 = time.monotonic(), engine._ticks
+        time.sleep(2.0)
+        rate = (engine._ticks - n0) / (time.monotonic() - t0)
+    finally:
+        engine.stop()
+    assert 95 <= rate <= 102, rate

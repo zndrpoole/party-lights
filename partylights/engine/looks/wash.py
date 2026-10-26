@@ -29,6 +29,8 @@ class WashLook(Look):
     description = "Colour gradient across the room, brightness follows the mix"
     #: Output release. Short or long because it is the drifting look.
     release_s = 0.45
+    #: No hits in a wash: the scenery swells with the low end.
+    bass = "swell"
 
     def __init__(self, patch):
         super().__init__(patch)

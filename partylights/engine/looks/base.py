@@ -38,6 +38,9 @@ class Look:
     #: snap; drifting looks set it long. The contrast between the two is what
     #: stops every look reading as the same slow wave.
     release_s: float | None = None
+    #: How the bass lights (par1, par2, the accent) move under this look: pump,
+    #: round, swell or look. See the BASS_* notes in engine.py.
+    bass: str = "pump"
     #: Set by the engine every tick from the softness control: multiply any
     #: decay or envelope time by this. 1.0 is the tuning as written; above
     #: is smoother, below is sharper. Motion speeds are deliberately exempt.

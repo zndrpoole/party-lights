@@ -97,9 +97,14 @@ class Emission:
     #: How eagerly to use dedicated white/amber emitters where they exist.
     #: 0 keeps colour purely in RGB; 1 extracts as much as the colour allows.
     emitter_bias: float = 1.0
+    #: Lift every colour emitter -- red, green, blue, white, amber -- to at
+    #: least this, whatever the colour. 1 is as bright as the fixture goes,
+    #: which no colour can ask for: white alone goes to the white emitter.
+    boost: float = 0.0
 
     def with_intensity(self, k: float) -> "Emission":
-        return Emission(self.rgb, clamp(self.intensity * k), self.strobe, self.uv, self.emitter_bias)
+        return Emission(self.rgb, clamp(self.intensity * k), self.strobe, self.uv,
+                        self.emitter_bias, self.boost)
 
     def blended(self, other: "Emission", t: float) -> "Emission":
         """Crossfade towards `other`. Used for look transitions."""

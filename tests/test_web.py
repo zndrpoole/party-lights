@@ -100,6 +100,74 @@ def test_wire_stream_comes_from_the_sent_frame_not_the_buffer(patch, tmp_path):
     assert _first_event(client)["fixtures"]["par1"]["output"] == 0.0
 
 
+def _events(client, url, n):
+    resp = client.get(url)
+    out = [json.loads(next(resp.response).decode().removeprefix("data: ")) for _ in range(n)]
+    resp.close()
+    return out
+
+
+def test_wire_stream_keeps_pace_with_the_writer(patch, tmp_path):
+    """Bug guarded: the stream slept a full DMX period *after* building each
+    payload, so it ran at ~31 fps against a 40 fps writer and skipped frames."""
+    client, universe = _client(patch, tmp_path)
+    universe.start()
+    try:
+        events = _events(client, "/api/wire", 21)
+    finally:
+        universe.stop(blackout=False)
+    frames = [e["frame"] for e in events[1:]]
+    assert frames == list(range(frames[0], frames[0] + len(frames)))
+
+
+class _Arc:
+    drops = 2
+
+
+class _Engine:
+    onset_counts = {"kick": 17}
+    arc = _Arc()
+
+    def set_layout(self, layout):
+        pass
+
+
+def _costume_client(patch, tmp_path):
+    universe = Universe(NullDriver(), slot_count=patch.max_channel)
+    app = create_app(patch=patch, universe=universe, state=None, engine=_Engine(),
+                     cues=None, layout_path=tmp_path / "layout.json",
+                     tuning_path=tmp_path / "tuning.json")
+    return app.test_client(), universe
+
+
+def _costume_frame(client, universe):
+    universe.start()
+    try:
+        return _events(client, "/api/costume", 2)[-1]
+    finally:
+        universe.stop(blackout=False)
+
+
+def test_costume_wears_the_accent_colour_at_full_brightness(patch, tmp_path):
+    client, universe = _costume_client(patch, tmp_path)
+    accent = patch.by_id["accent"]
+    universe.set_block(accent.address, accent.profile.render(Emission(rgb=(1, 0, 0.5), intensity=0.2)))
+    event = _costume_frame(client, universe)
+    assert event["rgb"][0] == 255 and event["rgb"][1] == 0
+    assert 0 < event["rgb"][2] < 255
+    assert event["dark"] is False
+    assert (event["kicks"], event["drops"]) == (17, 2)
+
+
+def test_costume_falls_back_to_the_brightest_fixture_and_goes_dark_with_the_rig(patch, tmp_path):
+    client, universe = _costume_client(patch, tmp_path)
+    assert _costume_frame(client, universe)["dark"] is True
+    par = patch.by_id["par4"]
+    universe.set_block(par.address, par.profile.render(Emission(rgb=(0, 1, 0))))
+    event = _costume_frame(client, universe)
+    assert event["rgb"] == [0, 255, 0] and event["dark"] is False
+
+
 def test_layout_round_trips_and_drops_unknown_fixtures(patch, tmp_path):
     client, _ = _client(patch, tmp_path)
     assert client.get("/api/layout").get_json() == {}
@@ -108,6 +176,71 @@ def test_layout_round_trips_and_drops_unknown_fixtures(patch, tmp_path):
     assert saved == {"par1": {"x": 0.25, "y": 1.0}}
     assert client.get("/api/layout").get_json() == saved
     assert client.post("/api/layout", json={"par1": {"x": "left"}}).status_code == 400
+
+
+def test_yard_placement_round_trips_clamped_and_drops_unknown_fixtures(patch, tmp_path):
+    universe = Universe(NullDriver(), slot_count=patch.max_channel)
+    client = create_app(patch=patch, universe=universe, state=None, engine=None, cues=None,
+                        layout_path=tmp_path / "layout.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    assert client.get("/api/yard").get_json() == {}
+    spec = {"x": 4.5, "y": -5.5, "h": -1, "ax": 7.7, "ay": -4.6, "ah": 6,
+            "beam": 500, "throw": 20}
+    saved = client.post("/api/yard", json={"par1": spec, "ghost": spec}).get_json()
+    assert saved == {"par1": {**spec, "h": 0.0, "beam": 120.0}}
+    assert client.get("/api/yard").get_json() == saved
+    assert client.post("/api/yard", json={"par1": {**spec, "beam": "wide"}}).status_code == 400
+    assert client.post("/api/yard", json={"par1": {"x": 1}}).status_code == 400
+    assert client.post("/api/yard", json=[1]).status_code == 400
+    assert client.get("/yard").status_code == 200
+
+
+def test_yard_tree_settings_are_clamped_and_saved(patch, tmp_path):
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
+                        cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    trees = {"opacity": 0, "items": [{"hidden": True, "scale": 1}, {"scale": 9}, {}]}
+    saved = client.post("/api/yard", json={"trees": trees}).get_json()
+    assert saved == {"trees": {"opacity": 0.1, "items": [{"hidden": True, "scale": 1.0},
+                                                         {"hidden": False, "scale": 1.5},
+                                                         {"hidden": False, "scale": 1.0}]}}
+    assert client.get("/api/yard").get_json() == saved
+    assert client.post("/api/yard", json={"trees": {"items": "all"}}).status_code == 400
+    assert client.post("/api/yard", json={"trees": {"items": [{"scale": "big"}]}}).status_code == 400
+
+
+def test_yard_view_centre_is_validated_and_saved(patch, tmp_path):
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
+                        cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    saved = client.post("/api/yard", json={"center": {"x": 9.456, "y": 400}}).get_json()
+    assert saved == {"center": {"x": 9.46, "y": 100.0}}
+    assert client.get("/api/yard").get_json() == saved
+    # Left out of a save, it is gone: the page falls back to the yard's middle.
+    assert client.post("/api/yard", json={}).get_json() == {}
+    for bad in ({"center": [1, 2]}, {"center": {"x": 1}}, {"center": {"x": "a", "y": 1}}):
+        assert client.post("/api/yard", json=bad).status_code == 400
+
+
+def test_yard_areas_and_markers_are_validated_and_saved(patch, tmp_path):
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
+                        cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    body = {"areas": [{"name": "Dance floor", "kind": "lit",
+                       "points": [[0, 0], [5, 0], [500, 5]]}],
+            "markers": [{"name": "Speaker", "x": 3.14159, "y": -2}]}
+    saved = client.post("/api/yard", json=body).get_json()
+    assert saved == {"areas": [{"name": "Dance floor", "kind": "lit",
+                                "points": [[0.0, 0.0], [5.0, 0.0], [100.0, 5.0]]}],
+                     "markers": [{"name": "Speaker", "x": 3.14, "y": -2.0}]}
+    assert client.get("/api/yard").get_json() == saved
+    bad = [{"areas": [{"kind": "glow", "points": [[0, 0]] * 3}]},
+           {"areas": [{"kind": "lit", "points": [[0, 0], [1, 1]]}]},
+           {"areas": [{"kind": "lit", "points": [[0, "x"]] * 3}]},
+           {"markers": [{"name": "no position"}]},
+           {"markers": "here"}]
+    for b in bad:
+        assert client.post("/api/yard", json=b).status_code == 400, b
 
 
 def test_softness_is_saved_and_restored_across_restarts(patch, tmp_path):
@@ -184,3 +317,48 @@ def test_rig_lists_every_palette_under_a_known_theme(patch, tmp_path):
     themes = [t["name"] for t in rig["palette_themes"]]
     assert themes == ["halloween", "party", "club", "functional", "misc"]
     assert all(p["theme"] in themes for p in rig["palettes"])
+
+
+def test_yard_layouts_are_validated_and_saved(patch, tmp_path):
+    client = create_app(patch=patch, universe=Universe(NullDriver()), state=None, engine=None,
+                        cues=None, layout_path=tmp_path / "l.json", tuning_path=tmp_path / "t.json",
+                        yard_path=tmp_path / "yard.json").test_client()
+    geom = {"x": 1, "y": 2, "h": 0.15, "ax": 1, "ay": 2.5, "ah": 99, "beam": 28, "throw": 6}
+    body = {"layout": "Rear wall glow",
+            "layouts": {"Rear wall glow": {"note": "Uplights", "fixtures": {"par1": geom, "ghost": geom}}}}
+    saved = client.post("/api/yard", json=body).get_json()
+    assert saved["layout"] == "Rear wall glow"
+    lay = saved["layouts"]["Rear wall glow"]
+    assert lay["note"] == "Uplights" and list(lay["fixtures"]) == ["par1"]
+    assert lay["fixtures"]["par1"]["ah"] == 15.0
+    assert client.post("/api/yard", json={"layouts": {"x": {"fixtures": {"par1": {"x": 1}}}}}).status_code == 400
+    assert client.post("/api/yard", json={"layouts": {"x": {"note": "no fixtures"}}}).status_code == 400
+    assert client.post("/api/yard", json={"par1": {**geom, "beam": "wide"}}).status_code == 400
+    long_note = "x" * 900
+    saved = client.post("/api/yard", json={"layouts": {"n": {"note": long_note, "fixtures": {}}}}).get_json()
+    assert saved["layouts"]["n"]["note"] == long_note
+
+
+
+def test_concurrent_saves_all_succeed(patch, tmp_path):
+    """A dragged slider posts many saves at once. With one shared temp file name
+    a save could rename another's file away and answer 500 (2026-10-18)."""
+    import threading
+    from partylights.engine.state import EngineState
+    app = create_app(patch=patch, universe=Universe(NullDriver()), state=EngineState(),
+                     engine=None, cues=None, layout_path=tmp_path / "l.json",
+                     tuning_path=tmp_path / "tuning.json")
+    codes = []
+
+    def drag(i):
+        client = app.test_client()
+        for k in range(10):
+            codes.append(client.post("/api/softness", json={"softness": (i + k) / 100}).status_code)
+    threads = [threading.Thread(target=drag, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert set(codes) == {200}
+    json.loads((tmp_path / "tuning.json").read_text())
+    assert [p.name for p in tmp_path.iterdir()] == ["tuning.json"]

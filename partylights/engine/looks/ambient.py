@@ -28,6 +28,8 @@ class AmbientLook(Look):
     description = "Slow breathing wash — for lulls, speeches and silence"
     #: Output release. Short or long because it is the idle look.
     release_s = 0.60
+    #: Between songs the scenery breathes with the accent's amber glow.
+    bass = "look"
 
     def __init__(self, patch):
         super().__init__(patch)

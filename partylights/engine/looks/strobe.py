@@ -20,6 +20,8 @@ class StrobeLook(Look):
     name = "strobe"
     wildness = 1.0
     description = "Hard white strobe — manual only, time-limited"
+    #: Strobe drives every fixture itself.
+    bass = "look"
     #: Excluded from automatic selection. See the module docstring.
     manual_only = True
 
@@ -37,6 +39,8 @@ class BlinderLook(Look):
     name = "blinder"
     wildness = 1.0
     description = "Everything full white — for finding your keys"
+    #: Full white means full white.
+    bass = "look"
     manual_only = True
 
     def render(self, music, palette, dt):

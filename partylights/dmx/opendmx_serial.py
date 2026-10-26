@@ -61,6 +61,9 @@ class OpenDmxSerialDriver(Driver):
         self.mab_s = mab_s
         self.break_mode = break_mode
         self._ser = None
+        #: Consecutive failed frames before the link counts as gone (~0.5 s at 40 Hz).
+        self.max_failures = 20
+        self._failures = 0
         # Preallocated so the send path never allocates: start code + 512 slots.
         self._buf = bytearray(513)
 
@@ -87,6 +90,7 @@ class OpenDmxSerialDriver(Driver):
         try:
             ser.open()
             self._ser = ser
+            self._failures = 0
         except Exception as e:
             raise DriverError(f"could not open {self.port}: {e}") from e
         log.info("Open DMX USB ready on %s (break_mode=%s)", self.port, self.break_mode)
@@ -116,7 +120,15 @@ class OpenDmxSerialDriver(Driver):
             ser.write(memoryview(self._buf)[: n + 1])
         except Exception as e:
             # One dropped frame is a flicker; a raise here would be a dark room.
-            log.warning("frame write failed on %s: %s", self.port, e)
+            # A run of them means the cable is out, and the handle is dead even
+            # if it comes back, so say so and let the caller reopen.
+            self._failures += 1
+            if self._failures >= self.max_failures:
+                raise DriverError(f"{self.port} stopped taking frames: {e}") from e
+            if self._failures == 1:
+                log.warning("frame write failed on %s: %s", self.port, e)
+        else:
+            self._failures = 0
 
     def close(self) -> None:
         if self._ser is not None:

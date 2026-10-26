@@ -445,6 +445,13 @@ class ListeningPass:
         return results
 
 
+def popular_first(tracks: list[dict]) -> list[dict]:
+    """Most popular first; tracks without a score keep their playlist order, last."""
+    scored = [t for t in tracks if isinstance(t.get("popularity"), (int, float))]
+    rest = [t for t in tracks if not isinstance(t.get("popularity"), (int, float))]
+    return sorted(scored, key=lambda t: -t["popularity"]) + rest
+
+
 def status(store: Store, out=print) -> None:
     saved = store.root / "playlist.json"
     if not saved.exists():
@@ -518,6 +525,10 @@ def main(args, settings) -> int:
         args.redo = True
     else:
         tracks = lp.load_tracks(args.playlist)
+        if getattr(args, "popular_first", False):
+            tracks = popular_first(tracks)
+            print(f"  Most popular first ({sum('popularity' in t for t in tracks)} of "
+                  f"{len(tracks)} have a popularity score; the rest keep playlist order).")
     caff = keep_awake()
     rec.start()
     print("\nRecording from", rec.device_name, "— leave the Mac plugged in and the lid open.")

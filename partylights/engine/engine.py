@@ -71,6 +71,47 @@ WHITE = (1.0, 1.0, 1.0)
 #: the current look's colours, then settles into the new look over about 1.5 s.
 DROP_FLASH_TAU_S = 0.45
 
+#: The bass lights (rig group `bass`) are the biggest washes in the yard,
+#: triangulated round it: par1 up the house corner, par2 into the NE pine and
+#: the accent from the bedroom window across to the east pines. They are the
+#: scenery the ring of PARs plays in front of, and they carry the low end.
+#:
+#: They follow the bass as one instrument rather than flashing on every hit
+#: the way the PARs may. A kick snaps them up to a level set by how hard the
+#: hit was -- full on a bar's downbeat -- they hold there, then fade back to a
+#: floor. A kick during the hold or fade lifts them again from wherever they
+#: are, so a steady four-on-the-floor reads as a pumping wash, never a
+#: flicker. The floor is high enough that the scenery never goes dark while
+#: the music plays. See _bass_wash().
+#:
+#: With a tempo the hold and fade are fractions of a beat, so the wash has
+#: room to fall before the next kick: on the live rig at 130 BPM, fixed times
+#: of 0.35 s + 1.2 s kept it pinned at full. They never go below the floors
+#: below, so a fast track still swells rather than blinks; without a tempo
+#: the fixed times are used.
+BASS_PEAK_MIN = 0.8
+BASS_HOLD_S = 0.35
+BASS_FADE_S = 1.2
+BASS_HOLD_BEATS = 0.25
+BASS_FADE_BEATS = 1.0
+BASS_MIN_HOLD_S = 0.08
+BASS_MIN_FADE_S = 0.35
+BASS_FLOOR = 0.22
+#: How a look wants the bass lights to move (Look.bass):
+#:
+#:   pump   all three hit together on every kick
+#:   round  the hit goes round the triangle, one light per kick, while the
+#:          other two still lift by BASS_ROUND_LIFT of it; each light is hit
+#:          only every third kick, so its fade is BASS_ROUND_FADE times longer
+#:   swell  no hits: a slow envelope of the low end, for the calm looks
+#:   look   hands off; the look's own levels stand (UV, hush, idle, strobe)
+BASS_ROUND_LIFT = 0.45
+BASS_ROUND_FADE = 2.0
+BASS_SWELL_FLOOR = 0.35
+BASS_SWELL_RANGE = 0.55
+BASS_SWELL_ATTACK_S = 0.6
+BASS_SWELL_RELEASE_S = 2.5
+
 #: Thresholds on *sustained* energy, not instantaneous energy.
 #:
 #: This distinction caused a real bug. FeatureFrame.energy is peak-normalised
@@ -179,6 +220,13 @@ class Engine:
         self._smoothed: dict[str, tuple[float, float]] = {}
         #: The drop hit, 0..1, decaying. See DROP_FLASH_TAU_S.
         self._flash = 0.0
+        #: The bass wash, per light: [last hit's level, seconds since it].
+        self._bass: dict[str, list[float]] = {}
+        self._bass_hold = BASS_HOLD_S
+        self._bass_fade = BASS_FADE_S
+        #: Whose turn it is in a `round`, and the slow envelope for `swell`.
+        self._bass_turn = 0
+        self._bass_swell = 0.0
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -456,7 +504,10 @@ class Engine:
         # The vibe scales how loud the music seems here: x2 at wild, x0.5 calm.
         energy = sustained * 2.0 ** (2.0 * vibe - 1.0)
         if energy > BUSY_ENERGY:
-            candidates = (["pulse", "rotor", "unison", "pingpong", "knockout", "sweep",
+            # Tide, not sweep: on the ring round the lawn a wave down the
+            # yard's long axis lights both long sides together, where the
+            # left-right sweep only crosses its narrow width.
+            candidates = (["pulse", "rotor", "unison", "pingpong", "knockout", "tide",
                            "beams", "chase"]
                           if music.tempo_locked
                           else ["pulse", "ripple", "unison", "callresponse", "knockout",
@@ -488,7 +539,7 @@ class Engine:
         fixtures where they were.
         """
         try:
-            return self.looks[name].render(music, pal, dt) or {}
+            return self._bass_follow(self.looks[name].render(music, pal, dt) or {})
         except Exception as e:
             self._errors += 1
             self._last_error = f"{name}: {e}"
@@ -518,8 +569,9 @@ class Engine:
     def _arc_cut(self, emissions: dict[str, Emission]) -> dict[str, Emission]:
         """The pre-drop gap and the riser. After smoothing, so the PARs cut
         to dark at once instead of fading over the look's release -- the gap
-        is often a single beat. The accent carries the riser in white. Scaled
-        by the vibe, like the build."""
+        is often a single beat. The bass lights carry the riser in white: the
+        house corner and both sets of pines rise while the lawn goes dark.
+        Scaled by the vibe, like the build."""
         mods = self.arc.mods
         k = self._arc_strength()
         blackout, riser = mods.blackout * k, mods.riser * k
@@ -531,7 +583,7 @@ class Engine:
             em = emissions.get(f.fid, BLACK)
             out[f.fid] = Emission(em.rgb, em.intensity * keep, em.strobe, em.uv,
                                   em.emitter_bias)
-        for f in self.patch.group("accent"):
+        for f in self.patch.group("bass") or self.patch.group("accent"):
             em = emissions.get(f.fid, BLACK)
             out[f.fid] = Emission(mix(em.rgb, WHITE, riser),
                                   max(em.intensity, 0.85 * riser), em.strobe, em.uv,
@@ -556,6 +608,89 @@ class Engine:
             rgb = em.rgb if max(em.rgb) > 0.0 else pal.at(0)
             out[f.fid] = Emission(rgb, max(em.intensity, flash), em.strobe, em.uv,
                                   em.emitter_bias)
+        return out
+
+    def _bass_wash(self, emissions: dict[str, Emission], music: MusicState, pal,
+                   dt: float) -> dict[str, Emission]:
+        """Drive the bass lights' brightness from the low end, as the active
+        look asks: see Look.bass and the BASS_* notes.
+
+        Replaces whatever brightness the look gave them and drops their strobe,
+        but keeps the look's colour and UV. After smoothing, which would
+        otherwise stretch the attack. While the music is silent the look has
+        them back, so idle looks still breathe.
+        """
+        lights = self.patch.group("bass")
+        if not lights:
+            return emissions
+        feel = getattr(self.looks.get(self._active), "bass", "pump")
+        for env in self._bass.values():
+            env[1] += dt
+        low = 0.0 if music.silent else max(music.smooth("bass"), music.smooth("sub"))
+        tau = BASS_SWELL_ATTACK_S if low > self._bass_swell else BASS_SWELL_RELEASE_S
+        self._bass_swell += (low - self._bass_swell) * (1.0 - math.exp(-dt / tau))
+
+        if music.onset("kick"):
+            strength = music.frame.onset_strength.get("kick", 0.0)
+            downbeat = music.tempo_locked and music.beat_index % 4 == 0 and (
+                music.beat_phase < 0.25 or music.beat_phase > 0.85)
+            peak = 1.0 if downbeat else BASS_PEAK_MIN + (1.0 - BASS_PEAK_MIN) * clamp(strength)
+            if music.tempo_locked and music.bpm > 0:
+                beat_s = 60.0 / music.bpm
+                self._bass_hold = min(BASS_HOLD_S, max(BASS_MIN_HOLD_S, BASS_HOLD_BEATS * beat_s))
+                self._bass_fade = min(BASS_FADE_S, max(BASS_MIN_FADE_S, BASS_FADE_BEATS * beat_s))
+            else:
+                self._bass_hold, self._bass_fade = BASS_HOLD_S, BASS_FADE_S
+            turn = lights[self._bass_turn % len(lights)].fid
+            self._bass_turn += 1
+            for f in lights:
+                hit = peak if feel != "round" or f.fid == turn else BASS_ROUND_LIFT * peak
+                # A softer kick mid-fade must not dip a wash still above it.
+                level = self._bass_level(f.fid, feel)
+                if hit > level:
+                    self._bass[f.fid] = [hit, 0.0]
+        if music.silent or feel == "look":
+            return emissions
+        out = dict(emissions)
+        for f in lights:
+            em = emissions.get(f.fid, BLACK)
+            if feel == "swell":
+                level = max(em.intensity, BASS_SWELL_FLOOR + BASS_SWELL_RANGE * self._bass_swell)
+            else:
+                level = BASS_FLOOR + (1.0 - BASS_FLOOR) * self._bass_level(f.fid, feel)
+            rgb = em.rgb if max(em.rgb) > 0.0 else pal.at(0)
+            out[f.fid] = Emission(rgb, level, 0.0, em.uv, em.emitter_bias)
+        return out
+
+    def _bass_level(self, fid: str, feel: str = "pump") -> float:
+        """One bass light's hit now, 0..1: its last peak, held, then eased out."""
+        peak, age = self._bass.get(fid, (0.0, 1e9))
+        fade = self._bass_fade * (BASS_ROUND_FADE if feel == "round" else 1.0)
+        age -= self._bass_hold
+        if age <= 0.0:
+            return peak
+        x = clamp(age / fade)
+        return peak * (1.0 - x * x * (3.0 - 2.0 * x))
+
+    def _bass_follow(self, emissions: dict[str, Emission]) -> dict[str, Emission]:
+        """Give the RGB bass lights the accent's colour and level.
+
+        Looks write the ring of PARs and the accent; par1 and par2 are neither,
+        so they take what the look gave the accent. The three bass lights then
+        read as one wash over the scenery, in the look's accent colour -- its
+        partner to the PARs, usually -- and wherever the accent goes dark (UV
+        and hush) they go dark with it. A look that drives them itself (strobe,
+        blinder) keeps its own values.
+        """
+        source = next((emissions[f.fid] for f in self.patch.group("accent")
+                       if f.fid in emissions), None)
+        if source is None:
+            return emissions
+        out = dict(emissions)
+        for f in self.patch.group("bass"):
+            if f.fid not in out:
+                out[f.fid] = Emission(source.rgb, source.intensity, source.strobe, 0.0,
+                                      source.emitter_bias)
         return out
 
     def _smooth(self, emissions: dict[str, Emission], dt: float) -> dict[str, Emission]:
@@ -622,7 +757,7 @@ class Engine:
 
         # A designed show picks the look and palette itself. Otherwise honour
         # the host's choice in manual mode, or let the music pick.
-        plan = self.show.plan(state.vibe)
+        plan = self.show.plan(state.vibe, pal)
         if plan is not None:
             look, pal, level = plan
             if look != self._active:
@@ -667,12 +802,14 @@ class Engine:
             if level < 1.0:
                 emissions = {fid: em.with_intensity(level) for fid, em in emissions.items()}
             emissions = self._smooth(emissions, dt)
+            emissions = self._bass_wash(emissions, music, pal, dt)
             # Cues after smoothing, like the arc's cut: a one-beat blackout
             # must be dark at once, not fading over the look's release.
             emissions = self.show.shade(emissions, state.vibe, dt, state.max_strobe_seconds)
         else:
             emissions = self._arc_shape(emissions)
             emissions = self._smooth(emissions, dt)
+            emissions = self._bass_wash(emissions, music, pal, dt)
             # The drop hit goes after smoothing: through the attack it never
             # reached full (byte 146 of 255 on the live rig), because it was
             # already decaying while the smoother rose. Its own decay is the fade.
@@ -711,6 +848,12 @@ class Engine:
     def run(self) -> None:
         period = 1.0 / self.tick_hz
         last = time.monotonic()
+        # Paced against a deadline, not "sleep the rest of this tick": macOS
+        # oversleeps by a millisecond or two, and sleeping a fixed remainder ran
+        # the engine at 83 ticks/s instead of 100. A late tick now shortens the
+        # next sleep, so the rate holds on average (which _energy_env, tuned per
+        # tick, relies on). A long stall resyncs rather than racing to catch up.
+        next_due = last
         log.info("Engine running at %.0f Hz, look=%s", self.tick_hz, self._active)
         while not self._stop.is_set():
             now = time.monotonic()
@@ -725,9 +868,12 @@ class Engine:
                 self._last_error = str(e)
                 if self._errors % 50 == 1:
                     log.exception("engine tick failed")
-            slack = period - (time.monotonic() - now)
+            next_due += period
+            slack = next_due - time.monotonic()
             if slack > 0:
                 time.sleep(slack)
+            elif slack < -period:
+                next_due = time.monotonic()
         log.info("Engine stopped after %d ticks (%d errors)", self._ticks, self._errors)
 
     def start(self) -> None:

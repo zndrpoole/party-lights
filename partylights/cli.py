@@ -155,6 +155,14 @@ def cmd_run(args) -> int:
     )
     cues = CueRouter(engine, universe, state)
 
+    # Songs with a design card play their show while the jukebox plays them,
+    # unless the host has taken the rig into manual mode.
+    engine.show.follow_enabled = bool(settings.get("shows.follow_jukebox", True))
+
+    def on_poll(info):
+        engine.show.follow(info.track_id, info.position_s, info.is_playing, info.at,
+                           allowed=state.mode == "auto")
+
     jukebox = None
     if settings.get("jukebox.enabled", True) and not args.no_jukebox:
         from .jukebox.client import JukeboxClient
@@ -162,6 +170,7 @@ def cmd_run(args) -> int:
             settings.get("jukebox.url", "http://localhost:5000"),
             poll_seconds=float(settings.get("jukebox.poll_seconds", 2.0)),
             on_track_change=lambda info: engine.on_track_change(info.title, info.artist),
+            on_poll=on_poll,
         )
 
     # --- bring it up, output first ---
@@ -220,6 +229,9 @@ def cmd_run(args) -> int:
     print(f"  Stage    http://localhost:{port}/viz")
     print()
 
+    # werkzeug logs every request at INFO. The watchdog and the host pages poll
+    # /api/state around the clock, so that was most of the log; errors still show.
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
     try:
         app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)
     finally:
@@ -310,6 +322,9 @@ def main(argv=None) -> int:
     p.add_argument("--status", action="store_true", help="show progress and stop")
     p.add_argument("--limit", type=int, help="map at most this many songs this run")
     p.add_argument("--redo", action="store_true", help="map songs again even if done")
+    p.add_argument("--popular-first", action="store_true",
+                   help="map the most popular songs first (Spotify popularity), so a "
+                        "partial pass covers the likeliest requests")
     p.add_argument("--track", help="map just this one song (Spotify track link or id), "
                                    "replacing any earlier map of it")
     p.add_argument("--jukebox-dir", default=str(Path(__file__).resolve().parents[2] / "juke-box"),

@@ -176,11 +176,27 @@ culprits.
 Then open **http://localhost:5055/** — bound to `0.0.0.0`, so use the Mac's LAN
 address from your phone and run the rig from anywhere in the house.
 
+> **No login.** Anyone on the same network can open these pages and fire
+> blackout, strobe or bench overrides. The jukebox proxy, the spook panel and
+> the costume all rely on that, so it stays open for the party. Keep guests on
+> a guest Wi-Fi network (or one without the party Mac) if that matters.
+
 | | |
 |---|---|
 | `/` | Full control: mode, master, looks, palettes, live meters, per-fixture override |
 | `/live` | Six big cue buttons mirroring the Stream Deck, plus the effects and the vibe slider |
 | `/api/cue/<name>` | The cue API — what the Stream Deck hits |
+| `/viz`, `/yard`, `/bench` | Stage plan, 3D backyard model, raw-channel test bench |
+| `/api/stream` | Server-sent events of the full state at 20 Hz (spook panel) |
+| `/api/wire` | Server-sent events of every transmitted DMX frame, decoded per fixture |
+| `/api/costume` | Server-sent events for the costume strip: `rgb`, `dark`, `kicks`, `drops`, one per frame |
+
+`/api/wire` and `/api/costume` are woken by the DMX writer itself, so they run
+at exactly its rate, and each frame is encoded once for every client.
+
+If the ENTTEC is missing or pulled out, the output retries it every
+`dmx.retry_seconds` (2 s) and `/api/state` shows `dmx.link.connected: false`;
+the jukebox watchdog alerts on that. Re-plugging the cable is all it takes.
 
 Useful flags while setting up: `--driver null` (no hardware), `--no-audio`,
 `--no-jukebox`. All three let you work on part of the system in isolation.
@@ -315,6 +331,34 @@ python -m partylights.cli listen "<playlist link>" --limit 3
 python -m partylights.cli songmap show "<song name>"
 ```
 
+`--popular-first` maps the most popular songs first, so a pass that only gets
+part way covers the likeliest requests.
+
+For a night's run, `tools/silent_pass.py --hours 7` switches the Mac's sound
+output to BlackHole (nothing comes out of the speakers), runs the pass most
+popular first, puts the output back however it ends, and drafts design cards
+for the new maps. It needs `brew install switchaudio-osx`, an empty jukebox
+queue, and the Spotify app awake (lid open).
+
+### Per-song shows
+
+A mapped song with a design card (`songs/designs/<track id>.yaml`) plays its
+own show whenever the jukebox plays it: looks per section, black for the
+stops, a build into each drop, a hit on the drop. The jukebox's `/api/now`
+reports the song's position, and the show keeps in step with it every poll
+(about a tenth of a second). Other releases of a mapped song are found through
+`songs/aliases.json`. Songs without a card are left to the music as usual.
+
+- **Draft cards** for every mapped song: `python tools/design_cards.py`
+  (`--list` shows which songs have a hand-made card, a draft or none). Drafts
+  use no colours of their own, so the show wears the rig's palette and the
+  host's pool and auto switching still apply. A card without `generated: true`
+  is never overwritten; delete that line from a draft to keep your edits.
+- **The host stays in charge:** manual mode ends a show, the `shows-off` cue
+  (or `shows`, a toggle) stops them for the night and `shows-on` brings them
+  back. `shows.follow_jukebox: false` in settings starts with them off.
+- `tools/playshow.py "<song>"` still plays a card on demand, to design one.
+
 ## Stream Deck and keyboard
 
 Every manual action is a named cue, and every trigger routes through the same
@@ -385,7 +429,8 @@ is the only honest option.
 | All fixtures do the same thing | They are all still on address 1 |
 | Nothing responds | Cable direction, or the fixture is not in DMX mode. `dmx_sweep.py flood` tests the link alone |
 | Lights lag the music | `audio.output_delay_ms`. Wireless DMX adds 20–80 ms; AirPlay adds ~2 s |
-| Lights stutter | Check `dropouts` and DMX `late` in the UI. Usually the i9 throttling |
+| Lights stutter | Check `dropouts` and DMX `late` in the UI. Usually the i9 throttling, or the Mac in DarkWake with the lid shut: keep it on AC with the lid open |
+| UI fine but the rig is dark | `dmx.link.connected` is false in `/api/state`: the ENTTEC dropped off USB. Re-seat it; output resumes within 2 s |
 | Lights frozen on one frame | `freeze` is on, or the engine died — the writer keeps sending the last good frame by design |
 | Fixtures stuck on after quitting | Should not happen: shutdown sends an all-zero frame. If the process was `kill -9`, re-run and blackout |
 

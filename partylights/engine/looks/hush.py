@@ -19,6 +19,8 @@ class HushLook(Look):
     description = "PARs out, blacklight only — for breakdowns"
     #: Output release. Long, so the room sinks into the dark rather than cutting.
     release_s = 1.2
+    #: A breakdown: the scenery drops to UV with the PARs.
+    bass = "look"
 
     def render(self, music, palette, dt):
         out = {f.fid: Emission(rgb=palette.at(0), intensity=0.0) for f in self.pars}

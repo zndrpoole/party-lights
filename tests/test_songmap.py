@@ -394,3 +394,9 @@ def test_playlist_links_parse():
     assert parse_playlist(f"spotify:playlist:{pid}") == pid
     assert parse_playlist(pid) == pid
     assert parse_playlist("https://open.spotify.com/track/xyz") is None
+
+
+def test_popular_first_keeps_unscored_tracks_in_order():
+    from partylights.songmap.listen import popular_first
+    tracks = [{"id": "a"}, {"id": "b", "popularity": 10}, {"id": "c", "popularity": 90}, {"id": "d"}]
+    assert [t["id"] for t in popular_first(tracks)] == ["c", "b", "a", "d"]

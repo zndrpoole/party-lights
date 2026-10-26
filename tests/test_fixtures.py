@@ -230,13 +230,26 @@ def test_patch_rejects_running_past_the_universe(rgb_profile):
 
 # -- the real rig -----------------------------------------------------------
 
+def test_a_bank_can_start_numbering_past_one(rgb_profile):
+    from partylights.fixtures.patch import _expand
+    bank = _expand({"id": "par", "profile": "rgb", "count": 3, "first": 4, "address": 22,
+                    "label": "PAR"}, {"rgb": rgb_profile}, start_position=2)
+    step = rgb_profile.footprint
+    assert [(f.fid, f.label, f.address, f.position) for f in bank] == [
+        ("par4", "PAR 4", 22, 2), ("par5", "PAR 5", 22 + step, 3), ("par6", "PAR 6", 22 + 2 * step, 4)]
+
+
 def test_real_rig_loads_and_matches_the_documented_address_map():
     patch = load_patch(DEFAULT_RIG)
-    assert len(patch) == 13
-    assert patch.max_channel == 94
-    expected = [1, 8, 15, 22, 29, 36, 43, 50, 57, 64, 71, 78]
-    assert [patch.by_id[f"par{i + 1}"].address for i in range(12)] == expected
+    assert len(patch) == 15
+    assert patch.max_channel == 115
+    # par3 (15) is out of the show for now, set off to the side.
+    assert "par3" not in patch.by_id
+    pars = [1, 2] + list(range(4, 13))
+    expected = [1, 8, 22, 29, 36, 43, 50, 57, 64, 71, 78]
+    assert [patch.by_id[f"par{i}"].address for i in pars] == expected
     assert patch.by_id["accent"].address == 85
+    assert [patch.by_id[f"par{i}"].address for i in (13, 14, 15)] == [95, 102, 109]
 
 
 def test_real_rig_pins_the_par_mode_channel_to_zero():

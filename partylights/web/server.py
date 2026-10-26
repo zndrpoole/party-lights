@@ -7,6 +7,7 @@ can run the rig from a phone while actually hosting. Three surfaces:
   /live     big-button cue page with keyboard shortcuts, for fast hands
   /viz      draggable stage plan showing what each fixture is doing
   /bench    test bench: raw channel values straight to chosen fixtures
+  /yard     3D model of the backyard, lit by the transmitted frame
   /api/*    JSON, including /api/cue/<name> which is what a Stream Deck hits
 
 Everything mutating is a POST. Nothing here touches DMX directly: requests
@@ -16,9 +17,12 @@ That keeps the real-time path free of HTTP.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -65,11 +69,111 @@ class _JSONProvider(DefaultJSONProvider):
 DEFAULT_LAYOUT = CONFIG_DIR / "layout.local.json"
 #: Live tuning set from the UI (Feel and the dimmer floor), kept across restarts.
 DEFAULT_TUNING = CONFIG_DIR / "tuning.local.json"
+#: Where /yard keeps each fixture's mount point and aim, in metres from the
+#: address point. Local for the same reason as the layout.
+DEFAULT_YARD = CONFIG_DIR / "yard.local.json"
+
+#: The fixture whose colour the costume strip wears: the bass wash keeps the
+#: look's colour even while its level rests low (its dimmer channel carries the
+#: level, so the hue stays exact). When it is off, the brightest fixture stands in.
+COSTUME_FIXTURE = "accent"
+#: Output below this is "off": the accent hands over, and if every fixture is
+#: under it the rig is dark (blackout, pre-drop slam). The bass floor is ~0.04.
+COSTUME_DARK_BELOW = 0.01
+
+#: /yard placement fields and the range each is clamped to. Lengths are metres
+#: (x east, y north, h up); beam is the full cone angle in degrees.
+YARD_FIELDS = {
+    "x": (-60.0, 60.0), "y": (-60.0, 60.0), "h": (0.0, 15.0),
+    "ax": (-60.0, 60.0), "ay": (-60.0, 60.0), "ah": (0.0, 15.0),
+    "beam": (4.0, 120.0), "throw": (1.0, 60.0),
+}
+#: Per-tree size multiplier range and the lowest crown opacity /yard allows.
+YARD_TREE_SCALE = (0.2, 1.5)
+YARD_TREE_OPACITY = (0.1, 1.0)
+YARD_MAX_TREES = 64
+#: Shapes and pins drawn on /yard: what each area means, and the limits.
+YARD_AREA_KINDS = ("boundary", "lit", "dark")
+YARD_MAX_AREAS, YARD_MAX_POINTS, YARD_MAX_MARKERS = 50, 200, 100
+YARD_COORD = 100.0
+YARD_NAME_LEN = 40
+#: Named placements to switch between on /yard, and how many to keep.
+YARD_MAX_LAYOUTS, YARD_NOTE_LEN = 20, 1000
+
+
+def _clean_geom(spec) -> dict:
+    """Clamp one fixture's /yard placement; raise ValueError on a bad field."""
+    if not isinstance(spec, dict):
+        raise ValueError("expected {x, y, h, ax, ay, ah, beam, throw}")
+    out = {}
+    for key, (lo, hi) in YARD_FIELDS.items():
+        try:
+            out[key] = round(min(max(float(spec[key]), lo), hi), 3)
+        except (TypeError, KeyError, ValueError):
+            raise ValueError(f"bad {key}") from None
+    return out
+
+
+def _coord(v) -> float:
+    return round(min(max(float(v), -YARD_COORD), YARD_COORD), 2)
+
+
+def _clean_areas(spec) -> list:
+    """Validate /yard's areas: [{name, kind, points: [[x, y], ...]}]."""
+    if not isinstance(spec, list):
+        raise ValueError("areas must be a list")
+    out = []
+    for a in spec[:YARD_MAX_AREAS]:
+        if not isinstance(a, dict) or a.get("kind") not in YARD_AREA_KINDS:
+            raise ValueError(f"each area needs a kind: one of {', '.join(YARD_AREA_KINDS)}")
+        pts = a.get("points")
+        if not isinstance(pts, list) or not 3 <= len(pts) <= YARD_MAX_POINTS:
+            raise ValueError(f"an area needs 3 to {YARD_MAX_POINTS} points")
+        out.append({"name": str(a.get("name", ""))[:YARD_NAME_LEN] or a["kind"],
+                    "kind": a["kind"],
+                    "points": [[_coord(p[0]), _coord(p[1])] for p in pts]})
+    return out
+
+
+def _clean_markers(spec) -> list:
+    """Validate /yard's markers: [{name, x, y}]."""
+    if not isinstance(spec, list):
+        raise ValueError("markers must be a list")
+    out = []
+    for m in spec[:YARD_MAX_MARKERS]:
+        if not isinstance(m, dict):
+            raise ValueError("each marker must be {name, x, y}")
+        out.append({"name": str(m.get("name", ""))[:YARD_NAME_LEN] or "marker",
+                    "x": _coord(m["x"]), "y": _coord(m["y"])})
+    return out
+
+
+def _clean_center(spec) -> dict:
+    """Validate /yard's view centre: {x, y}, the point the camera orbits."""
+    if not isinstance(spec, dict):
+        raise ValueError("center must be {x, y}")
+    return {"x": _coord(spec["x"]), "y": _coord(spec["y"])}
+
+
+def _clean_trees(spec) -> dict:
+    """Validate /yard's tree settings: {opacity, items: [{hidden, scale}]}."""
+    if not isinstance(spec, dict) or not isinstance(spec.get("items", []), list):
+        raise ValueError("trees must be {opacity, items: [{hidden, scale}]}")
+    lo, hi = YARD_TREE_OPACITY
+    out = {"opacity": round(min(max(float(spec.get("opacity", 1.0)), lo), hi), 3), "items": []}
+    lo, hi = YARD_TREE_SCALE
+    for item in spec.get("items", [])[:YARD_MAX_TREES]:
+        if not isinstance(item, dict):
+            raise ValueError("each tree must be {hidden, scale}")
+        out["items"].append({"hidden": bool(item.get("hidden", False)),
+                             "scale": round(min(max(float(item.get("scale", 1.0)), lo), hi), 3)})
+    return out
 
 
 def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=None,
                layout_path: str | Path = DEFAULT_LAYOUT,
-               tuning_path: str | Path = DEFAULT_TUNING) -> Flask:
+               tuning_path: str | Path = DEFAULT_TUNING,
+               yard_path: str | Path = DEFAULT_YARD) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.json = _JSONProvider(app)
     app.config["JSON_SORT_KEYS"] = False
@@ -165,14 +269,13 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             "server_time": round(time.time(), 2),
         }
 
-    def wire_payload() -> dict:
-        """The frame most recently handed to the driver, decoded per fixture.
+    def wire_frame(frame_no: int, frame: bytes) -> dict:
+        """One sent frame, decoded per fixture.
 
         Built from the transmitted bytes, never from engine state, so the
         visualiser shows exactly what the receivers get: blackout, freeze and
         manual overrides included.
         """
-        frame_no, frame = universe.sent_frame()
         return {
             "frame": frame_no,
             "fixtures": {
@@ -181,14 +284,85 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             },
         }
 
+    def costume_payload(frame_no: int, frame: bytes) -> dict:
+        """What the costume strip needs from one sent frame, in ~100 bytes.
+
+        Kicks and drops are running counters rather than flags, so a frame
+        lost to Wi-Fi delays a pulse instead of dropping it.
+        """
+        decoded = {f.fid: f.profile.decode(frame[f.address - 1 : f.last_channel])
+                   for f in patch.ordered()}
+        brightest = max(decoded.values(), key=lambda d: d["output"], default=None)
+        source = decoded.get(COSTUME_FIXTURE)
+        if source is None or source["output"] < COSTUME_DARK_BELOW:
+            source = brightest
+        rgb = [0, 0, 0]
+        if source is not None and max(source["display"]) > 0:
+            # display is gamma-encoded for screens; the strip is PWM, like DMX.
+            lin = [(c / 255.0) ** 2.2 for c in source["display"]]
+            peak = max(lin)
+            rgb = [int(round(255 * c / peak)) for c in lin]
+        return {
+            "frame": frame_no,
+            "rgb": rgb,
+            "dark": brightest is None or brightest["output"] < COSTUME_DARK_BELOW,
+            "kicks": engine.onset_counts.get("kick", 0) if engine is not None else 0,
+            "drops": engine.arc.drops if engine is not None else 0,
+        }
+
+    # One encoding per sent frame, shared by every client of a stream. /viz,
+    # /yard, /bench and the costume would otherwise each decode and serialise
+    # the same frame 40 times a second. A race only means encoding it twice.
+    latest_event: dict = {}
+
+    def encoded_event(payload_for, frame_no: int, frame: bytes) -> str:
+        hit = latest_event.get(payload_for)
+        if hit is None or hit[0] != frame_no:
+            hit = (frame_no, f"data: {json.dumps(payload_for(frame_no, frame))}\n\n")
+            latest_event[payload_for] = hit
+        return hit[1]
+
+    def frame_stream(payload_for):
+        """Server-sent events, one per frame the DMX writer sends.
+
+        Woken by the writer itself, so the stream runs at exactly its rate
+        (sleeping a fixed period after building each payload drifted to ~31 fps
+        and skipped frames). The current frame goes out immediately.
+        """
+        def generate():
+            last = None
+            while True:
+                frame_no, frame = universe.sent_frame()
+                if frame_no != last:
+                    last = frame_no
+                    yield encoded_event(payload_for, frame_no, frame)
+                universe.wait_frame(last, timeout=1.0)
+        return Response(generate(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Accel-Buffering": "no"})
+
     layout_file = Path(layout_path)
     tuning_file = Path(tuning_path)
+    yard_file = Path(yard_path)
+
+    save_lock = threading.Lock()
 
     def write_json(path: Path, data: dict) -> None:
-        # Write then rename, so a crash mid-save cannot leave half a file.
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        os.replace(tmp, path)
+        # Write then rename, so a crash mid-save cannot leave half a file. One
+        # save at a time, each with its own temp file: a dragged slider posts
+        # several saves at once, and with a shared temp name one save renamed
+        # another's file away and answered 500 (seen 2026-10-18).
+        text = json.dumps(data, indent=2)
+        with save_lock:
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(text)
+                os.replace(tmp, path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+                raise
 
     def save_tuning() -> None:
         write_json(tuning_file, {"softness": state.softness,
@@ -221,6 +395,15 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
             log.warning("ignoring unreadable layout file %s", layout_file)
             return {}
 
+    def read_yard() -> dict:
+        try:
+            return json.loads(yard_file.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            log.warning("ignoring unreadable yard file %s", yard_file)
+            return {}
+
     # Spatial looks need the saved arrangement from the start, not only after
     # the next drag in /viz.
     if engine is not None:
@@ -243,6 +426,10 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
     @app.route("/bench")
     def bench():
         return render_template("bench.html")
+
+    @app.route("/yard")
+    def yard():
+        return render_template("yard.html")
 
     # -- read ------------------------------------------------------------
 
@@ -283,23 +470,13 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
 
     @app.route("/api/wire")
     def api_wire():
-        """Server-sent events of the transmitted frame, for /viz.
+        """Server-sent events of the transmitted frame, for /viz."""
+        return frame_stream(wire_frame)
 
-        Paced at the DMX refresh rate so every frame the fixtures get can show.
-        """
-        period = 1.0 / universe.refresh_hz
-
-        def generate():
-            last = None
-            while True:
-                payload = wire_payload()
-                if payload["frame"] != last:
-                    last = payload["frame"]
-                    yield f"data: {json.dumps(payload)}\n\n"
-                time.sleep(period)
-        return Response(generate(), mimetype="text/event-stream",
-                        headers={"Cache-Control": "no-cache",
-                                 "X-Accel-Buffering": "no"})
+    @app.route("/api/costume")
+    def api_costume():
+        """Server-sent events for the costume strip: colour, dark, kicks, drops."""
+        return frame_stream(costume_payload)
 
     @app.route("/api/layout", methods=["GET"])
     def api_layout():
@@ -325,6 +502,66 @@ def create_app(*, patch, universe, state, engine, cues, capture=None, jukebox=No
         if engine is not None:
             engine.set_layout(layout)
         return jsonify(layout)
+
+    @app.route("/api/yard", methods=["GET"])
+    def api_yard():
+        return jsonify(read_yard())
+
+    def clean_layouts(spec) -> dict:
+        """Validate /yard's layouts: {name: {note, fixtures: {fid: placement}}}."""
+        if not isinstance(spec, dict):
+            raise ValueError("layouts must be {name: {note, fixtures}}")
+        out = {}
+        for name, lay in list(spec.items())[:YARD_MAX_LAYOUTS]:
+            if not isinstance(lay, dict) or not isinstance(lay.get("fixtures"), dict):
+                raise ValueError(f"layout {name!r} needs fixtures")
+            fixtures = {}
+            for fid, geom in lay["fixtures"].items():
+                if fid in patch.by_id:
+                    try:
+                        fixtures[fid] = _clean_geom(geom)
+                    except ValueError as e:
+                        raise ValueError(f"layout {name!r}, {fid}: {e}") from None
+            out[str(name)[:YARD_NAME_LEN]] = {"note": str(lay.get("note", ""))[:YARD_NOTE_LEN],
+                                               "fixtures": fixtures}
+        return out
+
+    @app.route("/api/yard", methods=["POST"])
+    def api_yard_save():
+        """Save where each fixture is mounted in the yard model and where it aims.
+
+        Only the geometry lives here. Colour and level always come from the
+        wire, so the model cannot drift from what the rig is doing. The
+        reserved key "trees" holds which trees are hidden, their size and how
+        see-through they are; "areas" and "markers" hold the shapes and pins
+        drawn on the ground (backyard boundary, where to light, where not to);
+        "layouts" holds named placements to switch between, and "layout" the
+        one last applied; "center" is a view centre the owner set, absent for
+        the default (the middle of the backyard).
+        """
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "expected {fixture_id: {x, y, h, ax, ay, ah, beam, throw}}"}), 400
+        yard = {}
+        cleaners = {"trees": _clean_trees, "areas": _clean_areas, "markers": _clean_markers,
+                    "center": _clean_center,
+                    "layouts": clean_layouts,
+                    "layout": lambda v: str(v)[:YARD_NAME_LEN]}
+        for key, clean in cleaners.items():
+            if key in data:
+                try:
+                    yard[key] = clean(data[key])
+                except (TypeError, ValueError, KeyError, IndexError) as e:
+                    return jsonify({"error": f"{key}: {e}"}), 400
+        for fid, spec in data.items():
+            if fid not in patch.by_id:
+                continue
+            try:
+                yard[fid] = _clean_geom(spec)
+            except ValueError as e:
+                return jsonify({"error": f"{fid}: {e}"}), 400
+        write_json(yard_file, yard)
+        return jsonify(yard)
 
     @app.route("/api/softness", methods=["POST"])
     def api_softness():

@@ -8,6 +8,8 @@ __pycache__/
 config/settings.local.yaml
 # Fixture arrangement saved from /viz
 config/layout.local.json
+# Yard model placements saved from /yard
+config/yard.local.json
 # Live tuning saved from the UI
 config/tuning.local.json
 # Listening pass: raw features are large and rebuildable only by replaying

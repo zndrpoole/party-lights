@@ -165,6 +165,15 @@ class CueRouter:
         self.state.freeze = False
         return {"mode": "auto"}
 
+    def shows(self, on: bool | None = None) -> dict:
+        """Per-song shows from the jukebox: on, off, or toggle. Off ends the one
+        playing, and the music drives the rig again."""
+        show = self.engine.show
+        show.follow_enabled = (not show.follow_enabled) if on is None else bool(on)
+        if not show.follow_enabled:
+            show.follow("", None, False)
+        return {"shows": show.follow_enabled}
+
     # -- dispatch ---------------------------------------------------------
 
     def fire(self, name: str, **kwargs) -> dict:
@@ -182,6 +191,9 @@ class CueRouter:
             "vibe-down": self.vibe_down,
             "clear-manual": self.clear_manual,
             "resume-auto": self.resume_auto,
+            "shows": self.shows,
+            "shows-on": lambda: self.shows(True),
+            "shows-off": lambda: self.shows(False),
         }
         if name in simple:
             result = simple[name](**kwargs) if kwargs else simple[name]()
@@ -214,7 +226,7 @@ class CueRouter:
         return [
             "blackout", "freeze", "mode", "next-look", "palette", "palette-auto",
             "master-up", "master-down", "vibe-up", "vibe-down",
-            "clear-manual", "resume-auto",
+            "clear-manual", "resume-auto", "shows", "shows-on", "shows-off",
             *(f"look/{n}" for n in LOOKS_BY_NAME),
             *(f"palette/{n}" for n in palettes.names()),
             *(f"preset/{n}" for n in PRESETS),

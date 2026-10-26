@@ -156,7 +156,7 @@ class FixtureProfile:
         for role, level in (("red", r), ("green", g), ("blue", b),
                             ("white", white), ("amber", amber)):
             if self.has(role):
-                out[self._by_role[role]] = gamma_byte(level, self.gamma)
+                out[self._by_role[role]] = gamma_byte(max(level, em.boost), self.gamma)
 
         if self.has("uv"):
             out[self._by_role["uv"]] = gamma_byte(em.uv, self.gamma)

@@ -59,6 +59,8 @@ class SwellLook(Look):
     description = "Full colours held for ages, slow swells and rolls — no hits"
     #: Output release. Short or long because it is the slowest look there is.
     release_s = 0.60
+    #: No hits: the scenery swells with the room.
+    bass = "swell"
 
     def __init__(self, patch):
         super().__init__(patch)

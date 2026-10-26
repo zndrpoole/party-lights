@@ -9,6 +9,10 @@
  * one arrangement serves the laptop and the phone alike. The engine reads them
  * too: spatial looks move light according to where fixtures sit here.
  *
+ * Fixtures that sit closer than they can be drawn (four lights under one palm)
+ * are spread apart on screen only, each with a leader line back to its saved
+ * spot. The saved layout, and so the engine, keeps the true positions.
+ *
  * The header readout (look, layers, beat) and the pickers are the exception to
  * "wire only": they come from /api/state, to say *why* the room looks as it
  * does while designing. The fixtures themselves are still drawn from the wire.
@@ -19,11 +23,16 @@ const stage = $("stage");
 
 let rig = null;
 let layout = {};
+let shown = {};          // fid -> {x, y}: where it is drawn, after spreading
 const els = {};          // fid -> {root, lens, badges, addr}
 let latest = {};         // fid -> decoded fixture from the last frame
 let selected = null;
 let locked = false;
 let showAddr = false;
+
+/* Spreading crowded fixtures: the gap kept between their boxes, in px, and
+   how far a fixture must be pushed before it gets a leader line. */
+const SPREAD_GAP = 6, SPREAD_ITER = 80, LEADER_MIN_PX = 6;
 
 /* The flash-rate range drawn for a strobe channel's slow..fast span. */
 const STROBE_HZ_MIN = 1, STROBE_HZ_MAX = 20;
@@ -49,7 +58,7 @@ function defaultLayout(fixtures) {
 /* -- building --------------------------------------------------------------- */
 
 function build() {
-  stage.innerHTML = "";
+  stage.innerHTML = `<svg class="leaders" aria-hidden="true"></svg>`;
   const defaults = defaultLayout(rig.fixtures);
   rig.fixtures.forEach((f) => {
     const pos = layout[f.id] || defaults[f.id];
@@ -58,7 +67,7 @@ function build() {
     root.className = "fx" + (f.emitters.length > 3 ? " big" : "");
     root.innerHTML = `
       <div class="lens"><div class="badges"></div></div>
-      <div class="tag">${f.label}<small>${f.id} · ch ${f.address}–${f.address + f.channels - 1}</small></div>`;
+      <div class="tag">${f.id} <span class="dmx">${f.address}</span><small>${f.label} · ch ${f.address}–${f.address + f.channels - 1}</small></div>`;
     stage.appendChild(root);
     els[f.id] = {
       root,
@@ -67,16 +76,68 @@ function build() {
       addr: root.querySelector("small"),
       strobeHz: 0,
     };
-    place(f.id);
     enableDrag(f.id, root);
   });
   applyAddrVisibility();
+  spread();
 }
 
 function place(fid) {
-  const { x, y } = layout[fid];
+  const { x, y } = shown[fid] || layout[fid];
   els[fid].root.style.left = `${x * 100}%`;
   els[fid].root.style.top = `${y * 100}%`;
+}
+
+/* Push overlapping fixtures apart on screen, starting from their saved spots,
+   then draw a leader from each one that moved back to where it really is. */
+function spread() {
+  const r = stage.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const ids = Object.keys(els);
+  const box = {}, pos = {};
+  ids.forEach((fid) => {
+    box[fid] = { w: els[fid].root.offsetWidth + SPREAD_GAP, h: els[fid].root.offsetHeight + SPREAD_GAP };
+    pos[fid] = { x: layout[fid].x * r.width, y: layout[fid].y * r.height };
+  });
+  for (let it = 0; it < SPREAD_ITER; it++) {
+    let moved = false;
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = pos[ids[i]], b = pos[ids[j]], ba = box[ids[i]], bb = box[ids[j]];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const ox = (ba.w + bb.w) / 2 - Math.abs(dx), oy = (ba.h + bb.h) / 2 - Math.abs(dy);
+        if (ox <= 0 || oy <= 0) continue;
+        moved = true;
+        // Separate along whichever axis needs the smaller push. Ties (stacked
+        // exactly) break by patch order so the result is stable.
+        if (ox < oy) {
+          const s = (dx > 0 || (dx === 0 && i < j) ? 1 : -1) * ox / 2;
+          a.x -= s; b.x += s;
+        } else {
+          const s = (dy > 0 || (dy === 0 && i < j) ? 1 : -1) * oy / 2;
+          a.y -= s; b.y += s;
+        }
+      }
+    }
+    ids.forEach((fid) => {   // keep every box inside the stage
+      const p = pos[fid], bx = box[fid];
+      p.x = Math.min(r.width - bx.w / 2, Math.max(bx.w / 2, p.x));
+      p.y = Math.min(r.height - bx.h / 2, Math.max(bx.h / 2, p.y));
+    });
+    if (!moved) break;
+  }
+  const lines = [];
+  ids.forEach((fid) => {
+    shown[fid] = { x: pos[fid].x / r.width, y: pos[fid].y / r.height };
+    place(fid);
+    const tx = layout[fid].x * r.width, ty = layout[fid].y * r.height;
+    if (Math.hypot(pos[fid].x - tx, pos[fid].y - ty) >= LEADER_MIN_PX) {
+      lines.push(`<line x1="${tx}" y1="${ty}" x2="${pos[fid].x}" y2="${pos[fid].y}"/><circle cx="${tx}" cy="${ty}" r="3"/>`);
+    }
+  });
+  const svg = stage.querySelector(".leaders");
+  svg.setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
+  svg.innerHTML = lines.join("");
 }
 
 /* -- dragging --------------------------------------------------------------- */
@@ -99,12 +160,13 @@ function enableDrag(fid, root) {
       x: Math.min(1 - mx, Math.max(mx, (e.clientX - r.left) / r.width)),
       y: Math.min(1 - mBottom, Math.max(mTop, (e.clientY - r.top) / r.height)),
     };
+    shown[fid] = layout[fid];
     place(fid);
   });
   const end = () => {
     if (!start) return;
     root.classList.remove("dragging");
-    if (start.moved) save();
+    if (start.moved) { save(); spread(); }
     else select(fid);
     start = null;
   };
@@ -188,6 +250,7 @@ function select(fid) {
 function applyAddrVisibility() {
   Object.values(els).forEach((el) => { el.addr.style.display = showAddr ? "" : "none"; });
   $("b-names").classList.toggle("on", showAddr);
+  spread();   // the tags change height, so the spacing has to follow
 }
 
 $("b-lock").onclick = () => {
@@ -204,7 +267,7 @@ $("b-names").onclick = () => {
 };
 $("b-reset").onclick = () => {
   layout = defaultLayout(rig.fixtures);
-  Object.keys(els).forEach(place);
+  spread();
   save();
 };
 
@@ -285,6 +348,7 @@ async function pollState() {
   rig = await rigRes.json();
   layout = await layoutRes.json();
   build();
+  new ResizeObserver(() => spread()).observe(stage);
   buildPickers();
   pollState();
   setInterval(pollState, 250);
