@@ -334,6 +334,12 @@ python -m partylights.cli songmap show "<song name>"
 `--popular-first` maps the most popular songs first, so a pass that only gets
 part way covers the likeliest requests.
 
+For a night's run, `tools/silent_pass.py --hours 7` switches the Mac's sound
+output to BlackHole (nothing comes out of the speakers), runs the pass most
+popular first, puts the output back however it ends, and drafts design cards
+for the new maps. It needs `brew install switchaudio-osx`, an empty jukebox
+queue, and the Spotify app awake (lid open).
+
 ### Per-song shows
 
 A mapped song with a design card (`songs/designs/<track id>.yaml`) plays its
